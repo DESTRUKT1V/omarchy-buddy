@@ -1,0 +1,16 @@
+{
+  "session_id": "ec91b074-fc31-4e96-81e6-b3679f698b04",
+  "transcript_path": "/home/user/.gemini/tmp/work/chats/session-2026-10-30T13-36-ec91b074.jsonl",
+  "cwd": "/home/user/projekt",
+  "hook_event_name": "AfterTool",
+  "timestamp": "2026-10-30T13:36:42.528Z",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "echo hallo",
+    "description": "Gruß"
+  },
+  "tool_response": {
+    "llmContent": "<untrusted_context>\nOutput: hallo\nProcess Group PGID: 359690\n</untrusted_context>",
+    "returnDisplay": "hallo"
+  }
+}

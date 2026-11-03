@@ -1,0 +1,32 @@
+{
+  "hookEventName": "post_tool_use",
+  "sessionId": "01a18d09-ddab-7d03-a5c3-5e0a87b5a0be",
+  "cwd": "/home/user/projekt",
+  "workspaceRoot": "/home/user/projekt",
+  "timestamp": "2026-10-30T13:39:56.529031+00:00",
+  "transcriptPath": "/home/user/.grok/sessions/%2Fhome%2Fuser%2Fprojekt/01a18d09-ddab-7d03-a5c3-5e0a87b5a0be/updates.jsonl",
+  "permissionMode": "default",
+  "toolName": "run_terminal_command",
+  "toolUseId": "call_1",
+  "toolInput": {
+    "command": "echo hallo",
+    "description": "Test"
+  },
+  "toolResult": "(gekürzt)",
+  "toolInputTruncated": false,
+  "toolResultTruncated": false,
+  "durationMs": 6,
+  "isBackgrounded": false,
+  "hook_event_name": "PostToolUse",
+  "session_id": "01a18d09-ddab-7d03-a5c3-5e0a87b5a0be",
+  "transcript_path": "/home/user/.grok/sessions/%2Fhome%2Fuser%2Fprojekt/01a18d09-ddab-7d03-a5c3-5e0a87b5a0be/updates.jsonl",
+  "permission_mode": "default",
+  "tool_name": "run_terminal_command",
+  "tool_input": {
+    "command": "echo hallo",
+    "description": "Test"
+  },
+  "tool_response": "(gekürzt)",
+  "tool_use_id": "call_1",
+  "duration_ms": 6
+}

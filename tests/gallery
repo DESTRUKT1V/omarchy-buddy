@@ -1,0 +1,628 @@
+#!/usr/bin/env bash
+# Shows every state of the island once, to look at (no pixel comparison):
+# the bar widget (also with a chat, mail or event reminder unread), peek, O-Morchy's gestures and
+# each #177 emotion at its real event (all side by side: tests/emotes), pop-ups
+# (normal, chat, mail, event reminder (also in the history), from a web app, buttons, many buttons, reply field, bundle, flood
+# summary, critical), news items (also the update summary and crashes with their buttons; a finished
+# agent run only as a pop-up), Claude
+# requests (one, two, three in a queue, a Codex one and Claude and Codex
+# sessions side by side, Gemini, Crush and Grok, opencode with Always, Pi and
+# Oh My Pi, Omarchy 4.5's Antigravity, Qwen, Kimi, Devin, Command Code and Kiro, a long question with several
+# choices and an own answer as an option, one while its terminal has the
+# focus, also in English at zoom 1.6, a long plan
+# unfolded and to revise, a cut command, file changes as a diff: short, long,
+# new file, also in a light theme), the open view (a long message
+# unfolded, empty after "alle löschen", undone; "Für dich" with many agents
+# and a mail, also light; a mail seen as a pop-up still there), the Ruhemodus, the screen
+# shared and the settings page (also with invalid values, a broken file,
+# English at zoom 1.6, Uptime Kuma's address and GitHub's sign-in hint, the
+# agents' switches), the
+# player window beside the open view (playing,
+# without cover, seeking and skipping, long names, English at zoom 1.6,
+# Spotify's "+": to save, saved (also light), errors; its part of the
+# settings page (none before a Spotify player ran);
+# without a connection the + for Spotify's desktop app, before and after
+# a click, through tests/fake-hyprctl).
+# tests/live checks most of it automatically.
+#
+#   tests/gallery                   a few seconds per state
+#   tests/gallery --pause 8         longer
+#   tests/gallery --fotos DIR       also a screenshot of each state (grim)
+#   tests/gallery --bereich "X,Y WxH"   the screenshot area (default: the island's
+#                                   surface, docked under the bar widget)
+#
+# Everything shown comes from the app "Buddy-Test" or fake sessions
+# and is cleared at the end (Ctrl+C included); the Ruhemodus is put back.
+# Test settings live only in memory; "alle löschen" is undone after a few
+# seconds (the history keeps it 8 s), whatever --pause says.
+set -uo pipefail
+
+pause=4
+photos=""
+area=""
+while (($#)); do
+  case $1 in
+    --pause) pause=$2; shift 2 ;;
+    --fotos) photos=$2; shift 2 ;;
+    --bereich) area=$2; shift 2 ;;
+    *) sed -n '2,20p' "$0"; exit 1 ;;
+  esac
+done
+[[ -n $photos ]] && mkdir -p "$photos"
+
+export OMARCHY_PATH=${OMARCHY_PATH:-/usr/share/omarchy}
+hook=$HOME/.local/bin/omarchy-buddy-hook
+news=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-buddy/news.json
+run=$(date +%H%M%S)
+step=0
+
+ipc() { omarchy-shell "$@" 2>/dev/null; }
+probe() { ipc omarchy-buddy.test "$@"; }
+
+if [[ $(probe ping) != ok ]]; then
+  echo "Die Insel antwortet nicht (omarchy-buddy.test)." >&2
+  exit 2
+fi
+quiet=$(ipc notifications isDnd)
+
+# Notify over D-Bus: summary body urgency [actions as gdbus list] [extra hints];
+# icon=NAME before the call sends an app icon.
+note() {
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- Buddy-Test 0 "${icon:-}" "$1" "$2" "${4:-[]}" \
+    "{'urgency': <byte $3>${5:+, $5}}" -1 >/dev/null
+}
+
+# A Claude request through the real hook, outside this process tree so it
+# finds no window to watch (it then waits 30 s for a decision).
+ask() {
+  printf '{"session_id":"buddy-test-%s","cwd":"/tmp/%s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"%s","description":"Galerie"}}' \
+    "$1" "$1" "$2" | systemd-run --user --quiet --collect --pipe "$hook" >/dev/null 2>&1 &
+}
+
+# Any tool's request through the real hook; tool_input as JSON.
+ask_tool() {  # id tool input
+  asked+=("$1")
+  jq -nc --arg s "buddy-test-$1" --arg t "$2" --argjson i "$3" \
+    '{session_id: $s, cwd: "/tmp", hook_event_name: "PermissionRequest", tool_name: $t, tool_input: $i}' |
+    systemd-run --user --quiet --collect --pipe "$hook" >/dev/null 2>&1 &
+}
+asked=()
+
+# A Codex event through the real hook (--codex): id event cwd [fields as JSON].
+codex_event() {
+  asked+=("$1")
+  jq -nc --arg s "buddy-test-$1" --arg e "$2" --arg c "$3" --argjson x "${4:-null}" \
+    '{session_id: $s, cwd: $c, hook_event_name: $e} + ($x // {})' | "$hook" --codex
+}
+# A further agent's event (#141): id agent event cwd [fields as JSON]; Grok
+# through the plain hook like Grok itself (GROK_HOOK_EVENT, hookEventName).
+other_event() {
+  asked+=("$1")
+  local args=(--agent "$2") extra=()
+  [ "$2" = grok ] && args=() extra=(GROK_HOOK_EVENT=x)
+  [ "$2" = agy ] && args+=("$3")  # (Antigravity's events carry no name and no session_id)
+  jq -nc --arg s "buddy-test-$1" --arg e "$3" --arg c "$4" --argjson x "${5:-null}" \
+    '{session_id: $s, conversationId: $s, cwd: $c, workspacePaths: [$c], hook_event_name: $e, hookEventName: $e} + ($x // {})' |
+    env OMARCHY_BUDDY_HOOK_WAIT=1 "${extra[@]}" "$hook" "${args[@]}" >/dev/null
+}
+click() { probe testClick "$1" >/dev/null; sleep 0.4; }
+cleared=0
+
+end_ask() {
+  "$hook" --decide "buddy-test-$1" focus 2>/dev/null
+  printf '{"session_id":"buddy-test-%s","cwd":"/tmp","hook_event_name":"SessionEnd"}' "$1" | "$hook"
+}
+
+# An emotion (#177) moves for about a second: the photo shows its held frame.
+feel() { sleep 1; show "$@"; }
+
+show() {  # title [area] [seconds, at most --pause]
+  step=$((step + 1))
+  printf '%2d  %s\n' "$step" "$1"
+  sleep 0.8
+  if [[ -n $photos ]]; then
+    grim -g "${2:-${area:-$(island)}}" "$photos/$(printf %02d "$step")-$(sed 's/[ /]/-/g; s/[^[:alnum:]äöüßÄÖÜ-]//g' <<<"$1").png"
+  fi
+  sleep "$( ((${3:-$pause} < pause)) && echo "$3" || echo "$pause")"
+}
+# The island's surface as it is now (as tall as the view shown, as wide as
+# the open view with the player), from the top of the screen, bar included.
+island() {
+  hyprctl layers -j | jq -r 'first(.[].levels[][] | select(.namespace == "omarchy-buddy")) | "\(.x),\(.y) \(.w)x\(.h)"'
+}
+# With --bereich: that area, H tall; without: the island's surface.
+size() { [[ -n $area ]] && echo "${area%x*}x$1"; }
+tall=$(size 1000)
+
+calm() {
+  probe testForget >/dev/null
+  ipc notifications dismissAll >/dev/null
+  probe testPeek false >/dev/null
+  ipc omarchy-buddy close >/dev/null
+  sleep 0.5
+}
+
+fake=""
+stop_player() { [[ -n $fake ]] && kill "$fake" 2>/dev/null; fake=""; }
+
+cleanup() {
+  trap - EXIT INT TERM
+  stop_player
+  if ((cleared)); then ipc omarchy-buddy open >/dev/null; sleep 0.5; probe testClick "Rückgängig" >/dev/null; probe testClick "Undo" >/dev/null; fi
+  for s in a1 b1 "${asked[@]}"; do end_ask "${s#buddy-test-}"; done
+  probe testSettings "" >/dev/null
+  probe testSpotify "" >/dev/null
+  probe testColors "" >/dev/null
+  probe testSharing false >/dev/null
+  probe testSettingsPage false >/dev/null
+  calm
+  [[ $quiet == on ]] && ipc notifications setDnd on >/dev/null
+  [[ $quiet == off ]] && ipc notifications setDnd off >/dev/null
+  # The gallery's news items leave news.json again.
+  python3 - "$news" <<'EOF'
+import fcntl, json, os, sys
+os.umask(0o077)  # news.json stays 600
+path = sys.argv[1]
+with open(os.path.join(os.path.dirname(path), "lock"), "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        items = json.load(open(path))
+    except (OSError, ValueError):
+        sys.exit()
+    keep = [i for i in items if not str(i.get("key", "")).startswith("buddy-test-")]
+    if len(keep) != len(items):
+        with open(path + ".tmp", "w") as f:
+            json.dump(keep, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+EOF
+  echo "aufgeräumt"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# A real Claude request covers every pop-up; wait a minute for it.
+for ((i = 0; i < 60; i++)); do
+  [[ $(probe state | jq -r '.ask != null') == false ]] && break
+  ((i == 0)) && echo "Eine Claude-Sitzung wartet auf dich, ihre Rückfrage verdeckt die Pop-ups – ich warte bis zu einer Minute."
+  sleep 1
+done
+
+ipc notifications setDnd off >/dev/null
+calm
+show "Leisten-Widget in Ruhe"
+
+probe testPeek true >/dev/null
+show "Peek: Zusammenfassung"
+probe testPeek false >/dev/null
+
+for e in wave squish dizzy celebrate; do
+  probe testEmote "$e" >/dev/null
+  show "O-Morchy: $e"
+done
+
+note "Lena" "Kommst du nachher noch vorbei?" 1
+show "Pop-up normal"
+calm
+
+icon=google-messages note "Mara" "Bist du heute Abend dabei?" 1 "[]" "'category': <'im.received'>"
+feel "Pop-up Chatnachricht (Sprechblase am App-Icon, O-Morchy mit Sprechblase)"
+calm
+
+icon=hey note "Rechnung Oktober" "Deine Rechnung ist da." 1 "[]" "'category': <'email.arrived'>"
+feel "Pop-up E-Mail (Brief am App-Icon, O-Morchy mit Brief)"
+calm
+
+# As GNOME Calendar's reminder service sends it (#166, tests/fixtures/calendar-notes).
+cal="'desktop-entry': <'org.gnome.Evolution-alarm-notify'>, 'image-path': <'appointment-soon'>"
+note "Erinnerungen" $'Teammeeting\nSa, 31.10.2026, 14:42 (30 Minuten) Raum A1' 1 "['default', '', 'app.show-reminders', 'Erinnerungen']" "$cal"
+feel "Pop-up Terminerinnerung (Kalender am App-Icon, Termin als Titel, bleibt stehen ohne Rot, #169; O-Morchy mit Wecker)"
+calm
+
+# As Chromium sends it from a tab or an Omarchy web app (#147).
+note "anna.b" $'www.instagram.com\n\nHey, hast du kurz Zeit?' 1 "['default', 'Activate', 'settings', 'Settings']" "'desktop-entry': <'chromium'>"
+show "Pop-up aus einer Web-App: Instagram statt Chromium"
+calm
+
+note "Mara" "Bist du heute Abend dabei?" 0 "[]" "'category': <'im.received'>"
+show "Leisten-Widget: Sprechblase für eine ungelesene Chatnachricht"
+note "Rechnung Oktober" "Deine Rechnung ist da." 0 "[]" "'category': <'email.arrived'>"
+show "Leisten-Widget: Brief für eine ungelesene E-Mail"
+note "Erinnerungen" $'Zahnarzt\nSa, 31.10.2026, 16:00' 0 "[]" "$cal"
+show "Leisten-Widget: Kalender für eine ungelesene Terminerinnerung"
+ipc omarchy-buddy open >/dev/null
+show "Verlauf: Terminerinnerung mit Kalender" "$tall"
+calm
+
+note "Paket unterwegs" "Zustellung heute zwischen 14 und 16 Uhr" 1 "['open', 'Öffnen', 'archive', 'Archive']"
+show "Pop-up mit Knöpfen"
+calm
+
+note "Tom" "Hast du kurz Zeit?" 1 "['inline-reply', 'Antworten']" "'x-kde-reply-placeholder-text': <'Antwort an Tom'>"
+show "Pop-up mit Antwortfeld"
+calm
+
+note "Termine" "Sechs Aktionen, drei als Knöpfe mit Umbruch" 1 "['a1', 'Zusagen für alle', 'a2', 'Absagen mit Nachricht', 'a3', 'Später erinnern', 'a4', 'Im Kalender öffnen', 'a5', 'Ort anzeigen', 'a6', 'Alle Teilnehmer']"
+show "Pop-up mit vielen Knöpfen"
+calm
+
+for i in 1 2 3; do note "Gruppe Wandern" "Nachricht $i" 1; done
+show "Bündel: drei Nachrichten vom selben Absender"
+calm
+
+for i in 1 2 3 4 5 6; do note "Flut $i" "" 1; done
+show "Flut: erste Meldung, dahinter die Sammelmeldung"
+ipc notifications dismissOne >/dev/null
+show "Flut: Sammelmeldung"
+calm
+
+note "Akku fast leer" "Noch 5 %" 2
+show "Pop-up kritisch (bleibt stehen)"
+calm
+
+omarchy-buddy-say --source system --level warn --key "buddy-test-$run-1" "Update verfügbar" "12 Pakete"
+show "Neuigkeit (Warnung)"
+ipc notifications dismissOne >/dev/null
+omarchy-buddy-say --source coding --level good --key "buddy-test-$run-2" "Tests grün" "omarchy-buddy · 42 bestanden"
+show "Neuigkeit (gut)"
+calm
+
+omarchy-buddy-say --source system --action updates --key "buddy-test-$run-3" \
+  "Updates: Omarchy, 12 Pakete, 3 mise-Tools, 2 npm" "Installiert alles in einem Terminal."
+show "Neuigkeit: Updates mit Knopf „Aktualisieren“ (hier nicht gedrückt)"
+calm
+
+omarchy-buddy-say --source system --level error --action crash:1 --key "buddy-test-$run-4" \
+  "3 Abstürze: beispiel (2×), spiel" "Dein Agent sieht sich den letzten an."
+feel "Neuigkeit: Abstürze gebündelt mit Knopf „Untersuchen“ (hier nicht gedrückt; O-Morchy: Ausfall)"
+ipc notifications dismissOne >/dev/null
+omarchy-buddy-say --source terminal --level error --private --key "buddy-test-$run-4t" \
+  "Befehl fehlgeschlagen nach 3 min" "„make build“ (Exit-Code 2)"
+feel "Neuigkeit: langer Terminal-Befehl fehlgeschlagen (#168, #169; O-Morchy betrübt)"
+ipc notifications dismissOne >/dev/null
+omarchy-buddy-say --source terminal --level good --private --key "buddy-test-$run-4u" \
+  "Befehl fertig nach 3 min" "„make build“"
+feel "Neuigkeit: langer Terminal-Befehl fertig (#169; O-Morchy nickt mit Haken)"
+ipc notifications dismissOne >/dev/null
+omarchy-buddy-say --source kuma --level warn --key "buddy-test-$run-4k" "Website ist ausgefallen" "seit 2 min"
+feel "Uptime Kuma: Dienst ausgefallen (O-Morchy: Ausfall)"
+ipc notifications dismissOne >/dev/null
+omarchy-buddy-say --source kuma --level good --key "buddy-test-$run-4l" "Website ist wieder da" ""
+feel "Uptime Kuma: Dienst wieder da (O-Morchy erleichtert)"
+ipc notifications dismissAll >/dev/null
+omarchy-buddy-say --source claude --level good --popup-only --private --key "buddy-test-$run-4f" \
+  "companion ist fertig nach 12 min" "„Baue die Insel“"
+show "Agent fertig: nur Pop-up, nicht in den Neuigkeiten darunter (#173)"
+ipc omarchy-buddy open >/dev/null
+sleep 0.5; probe testScrollTo "Untersuchen" >/dev/null
+show "Neuigkeiten mit Knöpfen „Aktualisieren“ und „Untersuchen“ (#169)" "$tall"
+calm
+
+ask "${run}a1" "rm -rf build"
+feel "Claude-Rückfrage (O-Morchy meldet sich)"
+ask "${run}b1" "git push origin main"
+show "Zwei Rückfragen (blättern)"
+ask_tool "${run}c1" Bash '{"command": "echo drei", "description": "Galerie"}'
+show "Drei Rückfragen in der Warteschlange"
+end_ask "${run}a1"; end_ask "${run}b1"; end_ask "${run}c1"
+sleep 0.5
+
+# Codex (#130): its mark instead of Claude's, Erlauben / Ablehnen only; in
+# the open view Claude and Codex sessions side by side.
+codex_event "${run}x1" UserPromptSubmit /tmp/insel '{"prompt": "Räum die Tests auf"}'
+codex_event "${run}x1" PreToolUse /tmp/insel '{"tool_name": "apply_patch", "tool_use_id": "g1", "tool_input": {"command": "*** Begin Patch\n*** Update File: tests/run\n*** End Patch"}}'
+calm
+show "Codex arbeitet: Leisten-Widget mit O-Morchy, der nachdenkt (#177)"
+probe testPeek true >/dev/null
+show "Codex arbeitet: Peek mit Ticker"
+probe testPeek false >/dev/null
+asked+=("${run}x2")
+printf 'rot\nblau\ngelb\n' > /tmp/buddy-test-farben.txt
+jq -nc --arg s "buddy-test-${run}x2" '{session_id: $s, cwd: "/tmp", hook_event_name: "PermissionRequest", tool_name: "apply_patch",
+  tool_input: {command: "*** Begin Patch\n*** Update File: buddy-test-farben.txt\n@@\n rot\n-blau\n+grün\n gelb\n*** Add File: buddy-test-neu.txt\n+Hallo\n*** End Patch"}}' |
+  systemd-run --user --quiet --collect --pipe "$hook" --codex >/dev/null 2>&1 &
+show "Codex-Rückfrage mit Diff (nur Erlauben und Ablehnen)" "$tall"
+printf '{"session_id":"buddy-test-%s","cwd":"/tmp/website","hook_event_name":"UserPromptSubmit","prompt":"Bau die Startseite um"}' "${run}y1" | "$hook"
+printf '{"session_id":"buddy-test-%s","cwd":"/tmp/website","hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"g2","tool_input":{"command":"npm run build"}}' "${run}y1" | "$hook"
+asked+=("${run}y1")
+codex_event "${run}x3" UserPromptSubmit /tmp/backup '{"prompt": "Prüf die Sicherung"}'
+codex_event "${run}x3" Interrupt /tmp/backup
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: Agents (Claude und Codex, Codex unterbrochen)" "$(size 700)"
+ipc omarchy-buddy close >/dev/null
+end_ask "${run}x2"; end_ask "${run}y1"; end_ask "${run}x3"
+rm -f /tmp/buddy-test-farben.txt
+end_ask "${run}x1"
+sleep 0.5
+
+# Further agents (#141): Gemini asks (its mark in the bar widget, answer in its
+# terminal), Crush works, Grok is done; the open view names each.
+other_event "${run}g1" gemini BeforeAgent /tmp/notizen '{"prompt": "Sortier die Notizen"}'
+other_event "${run}g1" gemini BeforeTool /tmp/notizen '{"tool_name": "run_shell_command", "tool_input": {"command": "rm -rf alt"}}'
+other_event "${run}g1" gemini Notification /tmp/notizen '{"notification_type": "ToolPermission", "message": "Tool Shell requires execution", "details": {"type": "exec", "title": "Shell", "command": "rm -rf alt"}}'
+show "Gemini fragt: Leisten-Widget mit Gemini-Zeichen"
+other_event "${run}k1" crush TurnStart /tmp/blog
+other_event "${run}k1" crush PreToolUse /tmp/blog '{"tool_name": "bash", "tool_use_id": "k", "tool_input": {"command": "hugo build"}}'
+other_event "${run}r1" grok UserPromptSubmit /tmp/app '{"prompt": "Schreib die Tests"}'
+other_event "${run}r1" grok Stop /tmp/app '{"reason": "end_turn"}'
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: Gemini fragt, Crush arbeitet, Grok fertig" "$(size 700)"
+ipc omarchy-buddy close >/dev/null
+for x in g1 k1 r1; do end_ask "${run}$x"; done
+sleep 0.5
+
+# Plugin agents (#142): opencode asks with Allow / Always / Deny (the island
+# can answer it), Pi works, Oh My Pi is done.
+other_event "${run}o1" opencode session.execution.started /tmp/shop '{"prompt": "Mach den Warenkorb schneller"}'
+asked+=("${run}o1")
+jq -nc --arg s "buddy-test-${run}o1" '{session_id: $s, cwd: "/tmp/shop", hook_event_name: "permission.asked", tool_name: "shell",
+  tool_input: {command: "npm run bench"}, permission_suggestions: [{type: "addRules", behavior: "allow",
+  destination: "projectSettings", rules: [{toolName: "shell", ruleContent: "npm run *"}]}]}' |
+  systemd-run --user --quiet --collect --pipe "$hook" --agent opencode >/dev/null 2>&1 &
+show "opencode fragt: Erlauben, Immer, Ablehnen" "$tall"
+other_event "${run}p1" pi-agent before_agent_start /tmp/notizen '{"prompt": "Fass die Woche zusammen"}'
+other_event "${run}p1" pi-agent tool_execution_start /tmp/notizen '{"tool_name": "read", "tool_use_id": "p", "tool_input": {"path": "woche.md"}}'
+other_event "${run}m1" omp before_agent_start /tmp/app '{"prompt": "Schreib die Tests"}'
+other_event "${run}m1" omp agent_end /tmp/app
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: opencode fragt, Pi arbeitet, Oh My Pi fertig" "$(size 700)"
+ipc omarchy-buddy close >/dev/null
+for x in o1 p1 m1; do end_ask "${run}$x"; done
+sleep 0.5
+
+# Omarchy 4.5's agents (#145, built from their docs): Antigravity asks (its
+# answer stays in its terminal), Qwen and Kimi work, Devin, Command Code
+# and Kiro are done; the open view names each with its mark.
+other_event "${run}a1" agy PreInvocation /tmp/rakete
+other_event "${run}a1" agy PreToolUse /tmp/rakete '{"toolCall": {"name": "ask_permission", "args": {}}}'
+show "Antigravity fragt: Leisten-Widget mit Raketen-Zeichen"
+other_event "${run}q1" qwen UserPromptSubmit /tmp/shop '{"prompt": "Bau den Checkout"}'
+other_event "${run}q1" qwen PreToolUse /tmp/shop '{"tool_name": "run_shell_command", "tool_input": {"command": "npm test"}}'
+other_event "${run}k1" kimi TurnStarted /tmp/notizen '{"prompt": "Räum die Notizen auf"}'
+other_event "${run}d1" devin UserPromptSubmit /tmp/app '{"prompt": "Behebe den Absturz"}'
+other_event "${run}d1" devin Stop /tmp/app
+other_event "${run}c1" commandcode PreToolUse /tmp/blog '{"tool_name": "shell_command", "tool_input": {"command": "hugo"}}'
+other_event "${run}c1" commandcode Stop /tmp/blog
+other_event "${run}i1" kiro-cli UserPromptSubmit /tmp/infra '{"prompt": "Prüf die Terraform-Pläne"}'
+other_event "${run}i1" kiro-cli Stop /tmp/infra
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: Antigravity fragt, Qwen und Kimi arbeiten, Devin, Command Code und Kiro fertig" "$(size 900)"
+ipc omarchy-buddy close >/dev/null
+for x in a1 q1 k1 d1 c1 i1; do end_ask "${run}$x"; done
+sleep 0.5
+
+# Muse Code (#144): it asks (Notification after the tool it was about to
+# run; the answer stays in its terminal), then the bar widget with its mark.
+other_event "${run}u1" muse UserPromptSubmit /tmp/export '{"prompt": "Bau den Export", "turn_id": "t1"}'
+other_event "${run}u1" muse PreToolUse /tmp/export '{"turn_id": "t1", "tool_name": "shell_command", "tool_use_id": "x1", "tool_input": {"command": "make dist"}}'
+other_event "${run}u1" muse Notification /tmp/export '{"turn_id": "t1", "notification_type": "permission_prompt"}'
+show "Muse fragt: make dist, Antwort im Terminal"
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: Muse fragt" "$(size 500)"
+ipc omarchy-buddy close >/dev/null
+end_ask "${run}u1"
+sleep 0.5
+
+# A question from the session whose terminal has the focus (this one): the
+# island shows it all the same.
+printf '{"session_id":"buddy-test-%s","cwd":"/tmp","hook_event_name":"SessionStart"}' "${run}v" | "$hook"
+python3 - "${run}v" "$(hyprctl activewindow -j | jq -r '.address // ""')" <<'EOF'
+import fcntl, json, os, sys
+run_dir = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "omarchy-buddy")
+with open(os.path.join(run_dir, "lock"), "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    path = os.path.join(run_dir, "state.json")
+    with open(path) as f:
+        data = json.load(f)
+    data["buddy-test-" + sys.argv[1]]["window"] = sys.argv[2]
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
+EOF
+ask_tool "${run}v" AskUserQuestion '{"questions": [{"question": "Terminal im Blick: trotzdem hier antworten?", "header": "Im Blick", "multiSelect": false, "options": [{"label": "Ja", "description": "Die Insel hält die Frage offen."}, {"label": "Nein", "description": ""}]}]}'
+show "Rückfrage, während ihr Terminal im Blick ist"
+end_ask "${run}v"
+sleep 0.5
+
+long="mit einer ausführlichen Beschreibung, die über mehrere Zeilen läuft, damit man sieht, wie die Insel umbricht"
+ask_tool "${run}q" AskUserQuestion "$(jq -nc --arg l "$long" '{questions: [range(1; 5) as $q |
+  {question: "Frage \($q): Welche Möglichkeit soll ich nehmen, \($l)?", header: "Teil \($q) mit langem Titel",
+   multiSelect: ($q == 2), options: [range(1; 5) as $o |
+     {label: "Möglichkeit \($q).\($o) mit langem Namen", description: "Möglichkeit \($o) \($l)."}]}]}')"
+show "Lange Frage: 4 Fragen mit 4 Möglichkeiten (scrollt)" "$tall"
+click "Möglichkeit 1.2 mit langem Namen"
+click "Möglichkeit 2.1 mit langem Namen"
+click "Möglichkeit 2.4 mit langem Namen"
+show "Lange Frage: Auswahl und Mehrfachauswahl, Antworten noch aus" "$tall"
+click "Eigene Antwort"
+show "Lange Frage: Eigene Antwort als Option, Feld offen (hingescrollt)" "$tall"
+probe testType "Lieber eine eigene, längere Antwort" >/dev/null; sleep 0.4
+show "Lange Frage: Eigene Antwort gewählt, Text unter der Option" "$tall"
+probe testSettings '{"language": "en", "zoom": 1.6}' >/dev/null
+show "Lange Frage auf Englisch, Zoom 1,6" "$tall"
+probe testSettings "" >/dev/null
+end_ask "${run}q"
+sleep 0.5
+
+ask_tool "${run}p" ExitPlanMode "$(jq -nc --arg l "$long" '{plan: ("# Langer Plan\n\n## Ziel\n\nDie Insel \($l).\n\n## Schritte\n\n"
+  + ([range(1; 41) as $i | "\($i). Schritt \($i) \($l)."] | join("\n")))}')"
+show "Langer Plan" "$tall"
+click "ganzer Plan"
+show "Langer Plan aufgeklappt (scrollt)" "$tall"
+click "Überarbeiten …"
+show "Plan überarbeiten: Feld mit Schicken und Abbrechen" "$tall"
+end_ask "${run}p"
+sleep 0.5
+
+ask_tool "${run}k" Bash "$(jq -nc --arg l "$long" '{command: ([range(1; 60) as $i | "echo \"Zeile \($i) \($l)\""] | join("\n")), description: "Sehr langer Befehl"}')"
+sleep 1
+click "ganzer Befehl"
+show "Gekürzter Befehl aufgeklappt (Hinweis unten)" "$tall"
+end_ask "${run}k"
+sleep 0.5
+
+# File changes as a diff: a short edit, a long one (unfolded, scrolls) and a
+# new file, in the theme and in a light one (rose-pine, only the island).
+light='{"foreground": "#575279", "background": "#faf4ed", "accent": "#56949f", "urgent": "#b4637a"}'
+diff_short='{"file_path": "/tmp/projekt/shell/Theme.qml", "old_string": "  readonly property int fCaption: s(11)\n  readonly property int fBody: s(13)\n  readonly property int fTitle: s(15)", "new_string": "  readonly property int fCaption: s(11)\n  readonly property int fBody: s(14)\n  readonly property int fTitle: s(15)"}'
+diff_long=$(jq -nc --arg l "$long" '[range(1; 61) | "zeile_\(.) = \"Text \(.)\""] as $a |
+  {file_path: "/tmp/projekt/lib/sehr/tief/verschachtelter/ordner/mit/langem/namen/einstellungen.py",
+   old_string: ($a | join("\n")),
+   new_string: ($a | .[4] = "zeile_5 = \"Geändert \($l)\"" | .[20:22] = [] | .[40] = "neu_41 = True\nneu_42 = False" | join("\n"))}')
+diff_new=$(jq -nc --arg f "/tmp/buddy-test-neu-$run.md" --arg l "$long" '{file_path: $f,
+  content: ("# Neue Datei\n\nDie Insel \($l).\n\n" + ([range(1; 26) | "- Punkt \(.)"] | join("\n")) + "\n")}')
+for theme in dark light; do
+  [[ $theme == light ]] && probe testColors "$light" >/dev/null
+  label=$([[ $theme == light ]] && echo " (hell)" || echo "")
+  ask_tool "${run}d" Edit "$diff_short"
+  show "Diff: kurze Änderung$label" "$tall"
+  end_ask "${run}d"; sleep 0.5
+  ask_tool "${run}e" Edit "$diff_long"
+  show "Diff: lange Änderung$label" "$tall"
+  click "ganze Änderung"
+  show "Diff: lange Änderung aufgeklappt$label" "$tall"
+  end_ask "${run}e"; sleep 0.5
+  ask_tool "${run}w" Write "$diff_new"
+  show "Diff: neue Datei$label" "$tall"
+  end_ask "${run}w"; sleep 0.5
+done
+probe testColors "" >/dev/null
+
+# "Für dich" (#175): with seven agents the waiting one, an unread mail and an
+# unread error stay at the top; the other agents and the rest below.
+for i in 1 2 3 4 5 6; do
+  asked+=("${run}v$i")
+  printf '{"session_id":"buddy-test-%s","cwd":"/tmp/projekt-%s","hook_event_name":"UserPromptSubmit","prompt":"Aufgabe %s"}' "${run}v$i" "$i" "$i" | "$hook"
+  ((i > 3)) && printf '{"session_id":"buddy-test-%s","cwd":"/tmp/projekt-%s","hook_event_name":"Stop"}' "${run}v$i" "$i" | "$hook"
+done
+asked+=("${run}v7")
+ask "${run}v7" "git push origin main"
+note "Rechnung Oktober" "Deine Rechnung ist da." 0 "[]" "'category': <'email.arrived'>"
+note "Paket unterwegs" "Zustellung heute" 0
+ipc omarchy-buddy open >/dev/null
+omarchy-buddy-say --source terminal --level error --private --key "buddy-test-$run-fd" \
+  "Befehl fehlgeschlagen nach 3 min" "„make build“ (Exit-Code 2)"
+show "Große Ansicht: „Für dich“ mit vielen Agents und einer Mail" "$tall"
+probe testColors "$light" >/dev/null
+show "Große Ansicht: „Für dich“ mit vielen Agents und einer Mail (hell)" "$tall"
+probe testColors "" >/dev/null
+ipc omarchy-buddy close >/dev/null
+for i in 1 2 3 4 5 6 7; do end_ask "${run}v$i"; done
+calm
+
+# #178: a mail came as a pop-up and was seen; after the open view closed
+# once it still stands in "Für dich" (read, so not bold), until clicked or ×.
+note "Rechnung November" "Deine Rechnung ist da." 1 "[]" "'category': <'email.arrived'>"
+show "Mail kommt als Pop-up"
+ipc notifications dismissAll >/dev/null
+ipc omarchy-buddy open >/dev/null; sleep 0.5; ipc omarchy-buddy close >/dev/null; sleep 0.5
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht: Mail kam als Pop-up, steht danach in „Für dich“" "$tall"
+calm
+
+note "Lena" "Kommst du nachher noch vorbei?" 0 "[]" "'category': <'im.received'>"
+note "Rechnung Oktober" "Deine Rechnung ist da." 0 "[]" "'category': <'email.arrived'>"
+note "Paket unterwegs" "Zustellung heute" 0
+ipc omarchy-buddy open >/dev/null
+show "Große Ansicht (Chat mit Sprechblase, Mail mit Brief)" "$(size 700)"
+ipc omarchy-buddy close >/dev/null
+note "Lange Meldung" "Anfang: $long. $long. $long. $long. $long." 0
+ipc omarchy-buddy open >/dev/null
+sleep 0.6
+click "Anfang:"
+show "Verlauf: lange Meldung aufgeklappt" "$(size 700)"
+cleared=1
+click "alle löschen"
+show "Verlauf leer nach „alle löschen“" "$(size 700)" 5
+click "Rückgängig"
+cleared=0
+show "Rückgängig: alles wieder da" "$(size 700)"
+ipc notifications setDnd on >/dev/null
+show "Große Ansicht im Ruhemodus" "$(size 700)"
+ipc notifications setDnd off >/dev/null
+probe testSharing true >/dev/null
+show "Große Ansicht beim Bildschirmteilen" "$(size 700)"
+probe testSharing false >/dev/null
+probe testSettingsPage true >/dev/null
+show "Einstellungen" "$(size 700)"
+probe testSettings '{"updateNews": false}' >/dev/null
+show "Einstellungen: Updates prüfen aus" "$(size 700)"
+probe testSettings '{"zoom": 7, "popupTime": "ewig", "limitWarn": "viel", "language": "de"}' >/dev/null
+show "Einstellungen mit ungültigen Werten" "$(size 700)"
+probe testSettings '{kaputt' >/dev/null
+show "Einstellungen mit kaputter config.json" "$(size 700)"
+probe testSettings '{"language": "en", "zoom": 1.6}' >/dev/null
+show "Einstellungen auf Englisch, Zoom 1,6" "$tall"
+probe testSettings "" >/dev/null
+probe testSettingsPage false >/dev/null
+# The news sources (#164): Kuma's field and GitHub's switch. The address is
+# tried for real (port 9 refuses at once); the other states are set.
+probe testSettings '{"feed": {"kuma": "http://127.0.0.1:9/status/heim"}}' >/dev/null
+probe testSettingsPage true >/dev/null
+probe testScrollTo "Quellen" >/dev/null; click "Quellen"  # folded since #193
+probe testScrollTo "GitHub" >/dev/null
+sleep 2
+probe testSources '{"gh": false}' >/dev/null
+show "Einstellungen: Kuma nicht erreichbar, gh abgemeldet" "$tall"
+probe testSources '{"kuma": "ok", "gh": true}' >/dev/null
+show "Einstellungen: Kuma-Statusseite gefunden" "$tall"
+probe testSources '{"kuma": "invalid"}' >/dev/null
+show "Einstellungen: Kuma-Adresse ungültig" "$tall"
+# The agents (#158): the installed ones, Codex and Copilot off (only in memory).
+probe testSettings '{"agents": {"codex": false, "copilot": false}}' >/dev/null
+probe testScrollTo "Codex" >/dev/null
+show "Einstellungen: Agents, Codex und Copilot aus" "$tall"
+probe testSettings "" >/dev/null
+probe testSources "" >/dev/null
+probe testSettingsPage false >/dev/null
+ipc omarchy-buddy close >/dev/null
+
+# The player window beside the open view, with tests/fake-player (the
+# island picks the player that started last, so it wins over the user's).
+wide=$([[ -n $area ]] && echo "$(( ${area%%,*} - 120 )),0 1240x700")
+player() { stop_player; "$(dirname "$0")/fake-player" "$@" >/dev/null 2>&1 & fake=$!; sleep 1; }
+player --cover
+ipc omarchy-buddy open >/dev/null
+show "Player neben der großen Ansicht" "$wide"
+player --no-seek --no-prev --no-next --title "Ein sehr langer Liedtitel, der nicht in eine Zeile passt (Live at Wembley Stadium, Remastered 2026)" --artist "Eine Band mit einem ebenso langen Namen und Gästen"
+show "Player ohne Cover, ohne Spulen und Weiter, lange Namen" "$wide"
+probe testSettings '{"language": "en", "zoom": 1.6}' >/dev/null
+player --cover --length 4000
+show "Player auf Englisch, Zoom 1,6, Stunden" "$([[ -n $area ]] && echo "$(( ${area%%,*} + 20 )),0 1480x1000")"
+probe testSettings "" >/dev/null
+# Spotify's "+" (#121): states set in memory, nothing reaches Spotify.
+player --cover --spotify
+probe testSpotify '{"connected": true, "answer": {"uri": "current", "saved": false}}' >/dev/null
+show "Player mit Spotify-Plus" "$wide"
+probe testSpotify '{"connected": true, "answer": {"uri": "current", "saved": true}}' >/dev/null
+show "Player: Titel in den Lieblingssongs" "$wide"
+probe testColors "$light" >/dev/null
+show "Player: Titel in den Lieblingssongs (hell)" "$wide"
+probe testColors "" >/dev/null
+probe testSpotify '{"connected": true, "answer": {"uri": "current", "error": "expired"}}' >/dev/null
+show "Player: Spotify-Anmeldung abgelaufen" "$wide"
+probe testSpotify '{"connected": true, "answer": {"uri": "current", "error": "offline"}}' >/dev/null
+show "Player: Spotify nicht erreichbar" "$wide"
+# Without a connection (#162): the +, its shortcut only reaches tests/fake-hyprctl.
+probe testSpotify "$(jq -nc --arg h "$(cd "$(dirname "$0")" && pwd)/fake-hyprctl" '{connected: false, hyprctl: [$h, "/dev/null"]}')" >/dev/null
+player --cover --spotify-app
+show "Player: Spotify-+ ohne Verbindung" "$wide"
+click "In deinen Lieblingssongs speichern oder entfernen"
+show "Player: Spotify-+, an Spotify geschickt" "$wide" 3
+probe testSpotify "" >/dev/null
+ipc omarchy-buddy close >/dev/null
+stop_player
+probe testSettingsPage true >/dev/null
+probe testScrollTo "Quellen" >/dev/null; click "Quellen"
+probe testSpotify '{"connected": false, "seen": false}' >/dev/null
+probe testScrollEnd >/dev/null
+show "Einstellungen: Spotify lief noch nie, kein Abschnitt" "$tall"
+probe testSpotify '{"connected": false, "seen": true, "connectError": "cancelled"}' >/dev/null
+probe testScrollEnd >/dev/null
+show "Einstellungen: Spotify verbinden, Anmeldung abgebrochen" "$tall"
+probe testSpotify '{"connected": true}' >/dev/null
+probe testScrollEnd >/dev/null
+show "Einstellungen: Spotify verbunden" "$tall"
+probe testSpotify "" >/dev/null
+probe testSettingsPage false >/dev/null
+ipc omarchy-buddy close >/dev/null

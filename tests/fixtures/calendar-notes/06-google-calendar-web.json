@@ -1,0 +1,24 @@
+{
+  "quelle": "Herkunft laut support.google.com/calendar/answer/37242 (calendar.google.com), Herkunftsabsatz wie Chromium 155; Titel und Text sind nicht belegt und erfunden",
+  "app": "Chromium",
+  "icon": "",
+  "summary": "Teammeeting",
+  "body": "calendar.google.com\n\n14:42 – 15:12",
+  "actions": [
+    "default",
+    "Activate",
+    "settings",
+    "Settings"
+  ],
+  "hints": {
+    "desktop-entry": "chromium",
+    "urgency": 1
+  },
+  "timeout": -1,
+  "erwartet": {
+    "kind": "event",
+    "sender": "Google Calendar",
+    "title": "Teammeeting",
+    "body": "14:42 – 15:12"
+  }
+}

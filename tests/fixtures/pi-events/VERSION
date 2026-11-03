@@ -1,0 +1,1 @@
+pi 1.4.0 mit agent-plugins/pi.js (eigener OpenAI-kompatibler Ersatz-Server, nicht angemeldet; interaktiv in tmux, mit Strg+D beendet)

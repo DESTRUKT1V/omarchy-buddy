@@ -1,0 +1,23 @@
+{
+  "session_id": "ses_e71db07e3ffemrMbnFCoGekBPb",
+  "cwd": "/home/user/projekt",
+  "hook_event_name": "permission.asked",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": "ls",
+    "description": "say hello"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "behavior": "allow",
+      "destination": "projectSettings",
+      "rules": [
+        {
+          "toolName": "shell",
+          "ruleContent": "ls *"
+        }
+      ]
+    }
+  ]
+}

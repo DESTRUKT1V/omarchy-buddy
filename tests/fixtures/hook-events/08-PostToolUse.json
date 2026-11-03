@@ -1,0 +1,30 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Delete notiz.txt",
+    "prompt": "Führe in dem Verzeichnis /home/user/projekt den Befehl `rm notiz.txt` aus (z. B. mit `cd /home/user/projekt && rm notiz.txt`). Der Inhalt der Datei war \"hallo\". Melde danach kurz, ob der Befehl erfolgreich war, und gib den Exit-Code oder die Fehlermeldung an. Sonst nichts tun.",
+    "subagent_type": "general-purpose"
+  },
+  "tool_response": {
+    "isAsync": true,
+    "status": "async_launched",
+    "agentId": "agent0001",
+    "description": "Delete notiz.txt",
+    "resolvedModel": "claude-haiku-5-5",
+    "prompt": "Führe in dem Verzeichnis /home/user/projekt den Befehl `rm notiz.txt` aus (z. B. mit `cd /home/user/projekt && rm notiz.txt`). Der Inhalt der Datei war \"hallo\". Melde danach kurz, ob der Befehl erfolgreich war, und gib den Exit-Code oder die Fehlermeldung an. Sonst nichts tun.",
+    "outputFile": "/tmp/claude-1000/-home-user-projekt/00000000-0000-4000-8000-000000000001/tasks/agent0001.output",
+    "canReadOutputFile": true,
+    "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_test0005",
+  "duration_ms": 5
+}

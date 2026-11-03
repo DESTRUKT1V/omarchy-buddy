@@ -1,0 +1,75 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "scratchpad_dir": "/tmp/claude-1000/-home-user-projekt/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "effort": {
+    "level": "medium"
+  },
+  "session_name": "Farbe und Tiere Umfrage",
+  "model": {
+    "id": "claude-haiku-5-5",
+    "display_name": "Haiku 5.5"
+  },
+  "workspace": {
+    "current_dir": "/home/user/projekt",
+    "project_dir": "/home/user/projekt",
+    "added_dirs": []
+  },
+  "version": "2.1.306",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 0.08203094,
+    "total_duration_ms": 15534,
+    "total_api_duration_ms": 12871,
+    "total_lines_added": 20,
+    "total_lines_removed": 0
+  },
+  "context_window": {
+    "total_input_tokens": 44039,
+    "total_output_tokens": 64,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 2,
+      "output_tokens": 64,
+      "cache_creation_input_tokens": 333,
+      "cache_read_input_tokens": 43704
+    },
+    "used_percentage": 4,
+    "remaining_percentage": 96
+  },
+  "exceeds_200k_tokens": false,
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "1h",
+    "expires_at": 1793211277,
+    "requests": 6,
+    "misses": 1,
+    "expected_rebuilds": 0,
+    "hit_ratio": 0.8890896521383904,
+    "cache_write_tokens": 28224,
+    "miss_recache_tokens": 14514,
+    "last_miss_at": 1793207674,
+    "last_miss_cause": null,
+    "miss_causes": {},
+    "recache_tokens_if_cold": 44039
+  },
+  "fast_mode": false,
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 19,
+      "resets_at": 1793212200
+    },
+    "seven_day": {
+      "used_percentage": 8,
+      "resets_at": 1793426400
+    }
+  }
+}

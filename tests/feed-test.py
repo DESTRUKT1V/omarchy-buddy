@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+# omarchy-buddy-feed with fixed inputs (B24): what each check makes of the
+# output of checkupdates, systemctl, coredumpctl, Uptime Kuma, GitHub and the
+# Claude Code changelog, which news items it hands on and what it remembers.
+# Nothing runs for real: run(), fetch(), say() and unsay() are replaced, HOME is a
+# sandbox. Aufruf: tests/feed-test.py
+import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile
+from datetime import datetime, timezone
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from testing import check, done, sandbox_env  # noqa: E402
+
+HOME = tempfile.mkdtemp(prefix="omarchy-buddy-feed-")
+os.environ.update(sandbox_env(HOME))
+FEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "omarchy-buddy-feed")
+loader = importlib.machinery.SourceFileLoader("feed", FEED)
+feed = importlib.util.module_from_spec(importlib.util.spec_from_loader("feed", loader))
+loader.exec_module(feed)
+
+said = []
+outputs = {}  # first word of the command → (exit code, stdout)
+feed.say = lambda title, body="", **kw: said.append(dict(kw, title=title, body=body))
+feed.run = lambda cmd, timeout=30: outputs.get(cmd[0], (1, ""))
+pages = {}
+def fetch(url, timeout=10):
+    if url not in pages:
+        raise OSError("offline")
+    return pages[url]
+feed.fetch = fetch
+
+
+def fresh(**out):
+    said.clear()
+    outputs.clear()
+    outputs.update(out)
+
+
+# 1. Updates (lib/updates.py): what each tool's output counts, one item for
+#    all of them, replaced only when the picture changes, gone when current.
+up = feed.updates
+samples = {
+    "pacman": (0, "linux 6.17.1-1 -> 6.17.2-1\nmesa 1:25.2.4-1 -> 1:25.2.5-1\nomarchy 3.1.0-1 -> 3.2.0-1\n\n"),
+    "yay": (0, "deckcraft 0.9.0-2 -> 0.12.0-1 [1d2h]\ngridcraft 0.10.0-2 -> 0.13.0-1 [1d2h]\n"),
+    "mise": (0, '{"node": {"requested": "latest", "current": "24.1.0", "latest": "24.2.0"}, "go": {}}'),
+    "npm": (1, '{\n  "npm": {"current": "11.20.0", "wanted": "12.2.1", "latest": "12.2.1"}\n}\n'),
+    "pnpm": (1, '{"typescript": {"current": "5.5.0", "latest": "5.6.0"}}'),
+    "flatpak": (0, "org.mozilla.firefox\norg.gnome.Platform\n"),
+    "rustup": (0, "stable-x86_64-unknown-linux-gnu - Update available : 1.81.0 -> 1.82.0\n"
+                  "nightly-x86_64-unknown-linux-gnu - Up to date : 1.84.0-nightly\nrustup - Up to date : 1.27.1\n"),
+}
+want = {"pacman": 2, "yay": 2, "mise": 2, "npm": 1, "pnpm": 1, "flatpak": 2, "rustup": 1}
+got = {name: up.count(name, *out) for name, out in samples.items()}
+check("Updates: jede Quelle zählt ihre Ausgabe (Omarchy nicht unter Paketen)", got == want, got)
+nothing = {"pacman": (2, ""), "yay": (1, ""), "mise": (0, "{}"), "npm": (0, ""), "pnpm": (0, "{}"), "flatpak": (0, ""),
+           "rustup": (0, "stable-x86_64-unknown-linux-gnu - Up to date : 1.82.0\n")}
+got = {name: up.count(name, *out) for name, out in nothing.items()}
+check("Updates: nichts da: überall 0", set(got.values()) == {0}, got)
+broken = {"pacman": (1, "==> FEHLER: Datenbank nicht erreichbar"), "npm": (1, '{"error": {"code": "ENOTFOUND"}}'),
+          "mise": (0, "kein json"), "flatpak": (1, ""), "rustup": (0, "error: no network")}
+got = {name: up.count(name, *out) for name, out in broken.items()}
+check("Updates: Fehler und offline: None statt 0", set(got.values()) == {None}, got)
+check("Updates: Omarchy im pacman-Stand erkannt", up.omarchy_ready(*samples["pacman"]) and not up.omarchy_ready(2, ""))
+
+have_all = lambda program: True
+check("Schritte: auf Omarchy erst mise/npm, omarchy-update zuletzt",
+      up.steps({"pacman": 3, "yay": 1, "mise": 2, "npm": 1, "flatpak": 0}, False, have_all)
+      == [["mise", "upgrade"], ["npm", "update", "-g"], ["omarchy-update"]], up.steps({"pacman": 3, "mise": 2, "npm": 1}, False, have_all))
+check("Schritte: nur Omarchy selbst neu: omarchy-update",
+      up.steps({"pacman": 0}, True, have_all) == [["omarchy-update"]])
+check("Schritte: nur npm: kein omarchy-update", up.steps({"pacman": 0, "npm": 2}, False, have_all) == [["npm", "update", "-g"]])
+no_omarchy = lambda program: program != "omarchy-update"
+check("Schritte: ohne Omarchy pacman und AUR einzeln",
+      up.steps({"pacman": 1, "paru": 1, "flatpak": 2}, False, no_omarchy)
+      == [["sudo", "pacman", "-Syu"], ["paru", "-Sua"], ["flatpak", "update"]])
+check("Schritte: nichts zu tun: leer", up.steps({}, False, have_all) == [])
+
+installed = set()
+unsaid = []
+real_which, real_unsay = feed.shutil.which, feed.buddy.unsay
+feed.shutil.which = lambda program: "/usr/bin/" + program if program in installed else None
+feed.buddy.unsay = unsaid.append
+try:
+    installed.update({"checkupdates", "yay", "paru", "mise", "npm"})
+    fresh(checkupdates=samples["pacman"], yay=samples["yay"], mise=samples["mise"], npm=samples["npm"],
+          paru=(0, "doppelt 1 -> 2\n"))
+    st = {}
+    feed.check_updates(st, quiet=True)
+    check("Updates: eine Meldung für alles, auch beim ersten Lauf",
+          [(s["title"], s["body"], s.get("key"), s.get("action")) for s in said]
+          == [("Updates: Omarchy, 4 Pakete, 2 mise-Tools, 1 npm", "Installiert alles in einem Terminal.",
+               "updates", "updates")], said)
+    check("Updates: paru nicht doppelt neben yay; Stand und Zeit gemerkt",
+          "paru" not in st["update_counts"] and st["omarchy_ready"] is True and st["updates_checked"] > 0, st)
+    said.clear()
+    feed.check_updates(st, quiet=False)
+    check("Updates: gleiche Lage: still", said == [], said)
+    fresh(checkupdates=(1, ""), yay=(1, "dies 1 -> 2\n"), mise=(0, "{}"), npm=(124, ""))
+    feed.check_updates(st, quiet=False)
+    check("Updates: Quelle kaputt: behält ihre letzte Zahl; neue Lage ersetzt die alte Meldung",
+          [s["title"] for s in said] == ["Updates: Omarchy, 3 Pakete, 1 npm"] and unsaid[-1] == "updates", said)
+    stamp = st["updates_checked"] = 1
+    fresh(checkupdates=(1, ""), yay=(-1, ""), mise=(-1, ""), npm=(-1, ""))
+    feed.check_updates(st, quiet=False)
+    check("Updates: alles offline: still, nächster Lauf versucht es wieder", said == [] and st["updates_checked"] == stamp, said)
+    unsaid.clear()
+    fresh(checkupdates=(2, ""), yay=(1, ""), mise=(0, "{}"), npm=(0, ""))
+    feed.check_updates(st, quiet=False)
+    check("Updates: alles aktuell: Meldung verschwindet", said == [] and unsaid == ["updates"], (said, unsaid))
+    installed.clear()
+    st = {}
+    fresh()
+    feed.check_updates(st, quiet=False)
+    check("Updates: kein Werkzeug da: nichts, kein Stempel", said == [] and "updates_checked" not in st, st)
+finally:
+    feed.shutil.which, feed.buddy.unsay = real_which, real_unsay
+
+# 2. Failed units: transient run-*.service ignored, only new ones reported.
+outputs["systemctl"] = (0, "nginx.service loaded failed failed Web\nrun-u42.service loaded failed failed x\n")
+st = {"failed_units": []}
+feed.check_failed_units(st, quiet=False)
+check("Dienste: neuer Ausfall gemeldet, run-* nicht", [s["title"] for s in said] == ["Dienst ausgefallen: nginx.service"]
+      and st["failed_units"] == ["nginx.service"], (said, st))
+said.clear()
+feed.check_failed_units(st, quiet=False)
+check("Dienste: derselbe Ausfall: still", said == [])
+
+# 3. Disks: a warning at 85 %, an error at 95 %, each level once.
+Usage = type("Usage", (), {})
+def usage(pct):
+    u = Usage(); u.total = 100 * 2**30; u.used = pct * 2**30; u.free = (100 - pct) * 2**30
+    return lambda mount: u
+real_usage = feed.shutil.disk_usage
+try:
+    st = {}
+    fresh()
+    feed.shutil.disk_usage = usage(87)
+    feed.check_disks(st, quiet=False)
+    feed.check_disks(st, quiet=False)
+    feed.shutil.disk_usage = usage(96)
+    feed.check_disks(st, quiet=False)
+    levels = [(s["title"], s["level"]) for s in said if "/home" not in s["title"]]
+    check("Platte: 85 % Warnung, 95 % Fehler, je einmal",
+          levels == [("Platte / zu 87 % voll", "warn"), ("Platte / zu 96 % voll", "error")], levels)
+finally:
+    feed.shutil.disk_usage = real_usage
+
+# 3b. Crashes (#165): the user's own core dumps since the last run in one item,
+#     a click investigates the newest; no second pop-up where Omarchy's crash
+#     watcher showed its own; Omarchy's switches (capture off, muted program) count.
+UID = os.getuid()
+T0 = 1_700_000_000_000_000  # µs, like coredumpctl
+def dump(sec, pid, exe, uid=UID, sig=11):
+    return {"time": T0 + sec * 1_000_000, "pid": pid, "uid": uid, "gid": uid, "sig": sig, "exe": exe, "corefile": "present", "size": 1}
+def dumps(*d):
+    return (0, json.dumps(list(d)))
+WATCH = (0, "ActiveState=active\nActiveEnterTimestamp=@%d\n" % (T0 // 1_000_000 - 60))
+real_which = feed.shutil.which
+feed.shutil.which = lambda program: "/usr/bin/" + program
+toggles = feed.OMARCHY_TOGGLES
+try:
+    st = {}
+    fresh(coredumpctl=dumps(dump(5, 10, "/usr/bin/beispiel")))
+    feed.check_crashes(st, quiet=True)
+    check("Absturz: erster Lauf merkt sich nur die Zeit", said == [] and st["crash_last"] > T0, st)
+    st = {"crash_last": T0}
+    fresh(coredumpctl=dumps(dump(0, 9, "/usr/bin/alt"), dump(5, 10, "/usr/bin/beispiel"), dump(6, 11, "/usr/bin/fremd", uid=0)),
+          systemctl=(0, "ActiveState=inactive\n"), **{"omarchy-default-agent": (0, "claude\n")})
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: einer, nur eigene und neue, „Untersuchen“ untersucht ihn, Pop-up (Omarchy-Wächter aus)",
+          [(s["title"], s["body"], s["level"], s["action"], s["quiet"]) for s in said]
+          == [("Abgestürzt: beispiel", "Dein Agent sucht die Ursache.", "error", "crash:10", False)]
+          and st["crash_last"] == T0 + 5_000_000, (said, st))
+    fresh(coredumpctl=dumps(dump(7, 12, "/usr/bin/beispiel"), dump(8, 13, "/opt/x/spiel"), dump(9, 14, "/usr/bin/beispiel")),
+          systemctl=WATCH, **{"omarchy-default-agent": (0, "claude\n")})
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: mehrere gebündelt, Omarchy hat schon gemeldet: nur in den Verlauf",
+          [(s["title"], s["body"], s["action"], s["quiet"]) for s in said]
+          == [("3 Abstürze: beispiel (2×), spiel", "Dein Agent sieht sich den letzten an.", "crash:14", True)], said)
+    fresh(coredumpctl=dumps(dump(10, 15, "/usr/bin/beispiel"), dump(11, 16, "/usr/bin/beispiel")), systemctl=WATCH)
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: ohne Standard-Agent meldet Omarchy nichts: Pop-up, „Untersuchen“ zeigt Einzelheiten",
+          [(s["title"], s["body"], s["quiet"]) for s in said]
+          == [("2 Abstürze: beispiel", "Zeigt den letzten im Terminal.", False)], said)
+    os.makedirs(os.path.join(toggles, "crash-ignore"))
+    open(os.path.join(toggles, "crash-ignore", "beispiel"), "w").close()
+    fresh(coredumpctl=dumps(dump(12, 17, "/usr/bin/beispiel")))
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: in Omarchy stummgeschaltetes Programm: still, Zeit weiter", said == [] and st["crash_last"] == T0 + 12_000_000)
+    open(os.path.join(toggles, "crash-capture-off"), "w").close()
+    fresh(coredumpctl=dumps(dump(13, 18, "/usr/bin/anderes")))
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: Omarchys Crash Capture aus: still", said == [] and st["crash_last"] == T0 + 13_000_000)
+    os.remove(os.path.join(toggles, "crash-capture-off"))
+    fresh(coredumpctl=(1, ""))
+    feed.check_crashes(st, quiet=False)
+    check("Absturz: keine neuen (coredumpctl Exit 1): still", said == [] and st["crash_last"] == T0 + 13_000_000)
+    check("Absturz: Programmname wie Omarchys Wächter", [feed.crash_name(e) for e in ("/usr/bin/foot", "", None, "/")]
+          == ["foot", "unknown", "unknown", "unknown"])
+finally:
+    feed.shutil.which = real_which
+
+# 4. Claude Code: the newest version from the changelog, "Added" lines first.
+pages["https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md"] = (
+    "# Changelog\n\n## 2.5.0\n\n- Fixed a crash\n- Added the `/fast` command\n- Added an option to do things\n"
+    "- Improved speed\n\n## 2.4.9\n\n- Added old stuff\n")
+fresh(claude=(0, "2.4.9 (Claude Code)\n"))
+st = {"claude_latest": "2.4.9"}
+feed.check_claude_code(st, quiet=False)
+check("Claude Code: neue Version mit den neuen Funktionen", said and said[0]["title"] == "Claude Code 2.5.0 ist da"
+      and said[0]["body"] == "Neu: /fast command; option to do things  (installiert: 2.4.9)", said)
+said.clear()
+feed.check_claude_code(st, quiet=False)
+check("Claude Code: dieselbe Version: still", said == [] and st["claude_latest"] == "2.5.0")
+
+# 5. Releases: nothing when the installed one is as new, the first bullet otherwise.
+pages["https://api.github.com/repos/basecamp/omarchy/releases/latest"] = json.dumps(
+    {"tag_name": "v3.2.0", "body": "Intro\n\n* Better *things*\n- second", "html_url": "https://x/rel"})
+st = {}
+fresh()
+feed.check_release(st, False, "basecamp/omarchy", "Omarchy", "3.2.0")
+check("Release: installiert ist schon so neu: still", said == [] and st["release_basecamp/omarchy"] == "3.2.0", st)
+st = {}
+feed.check_release(st, False, "basecamp/omarchy", "Omarchy", "3.1.9")
+check("Release: neuer: erste Zeile der Notizen", said and said[0]["title"] == "Omarchy 3.2.0 erschienen"
+      and said[0]["body"] == "Better *things  (installiert: 3.1.9)" and said[0]["url"] == "https://x/rel", said)
+
+# 7b. Uptime Kuma: the two public endpoints behind a status page URL; a down
+#     monitor once (several bundled), back only after 10 quiet minutes, no
+#     second item while it flaps, the page itself after two failed tries.
+check("Kuma: Endpunkte aus der Statusseiten-URL",
+      feed.kuma_api("https://kuma.example.org/status/meine/") == ("https://kuma.example.org/api/status-page/meine",
+                                                                 "https://kuma.example.org/api/status-page/heartbeat/meine")
+      and feed.kuma_api("https://kuma.example.org/dashboard") is None and feed.kuma_api("file:///status/x") is None)
+KUMA = "https://kuma.example.org/status/meine"
+NOW = feed.time.time()
+def beat(status, ago):
+    return {"status": status, "time": datetime.fromtimestamp(NOW - ago, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], "msg": "", "ping": 5}
+def kuma(beats, names=None):
+    pages[KUMA.replace("/status/", "/api/status-page/")] = json.dumps({"publicGroupList": [{"name": "Dienste", "monitorList":
+        [{"id": int(k), "name": n} for k, n in (names or {"1": "Nextcloud", "2": "Caddy", "3": "Jellyfin"}).items()]}]})
+    pages[KUMA.replace("/status/", "/api/status-page/heartbeat/")] = json.dumps({"heartbeatList": beats, "uptimeList": {}})
+check("Kuma: Zustand seit dem ersten Ausfall nach dem letzten Up, Pending hält",
+      feed.kuma_state([beat(1, 900), beat(2, 600), beat(0, 540), beat(0, 60)])[0] == "down"
+      and abs(feed.kuma_state([beat(1, 900), beat(2, 600), beat(0, 540), beat(0, 60)])[1] - (NOW - 540)) < 0.01
+      and feed.kuma_state([beat(0, 900), beat(1, 300), beat(1, 60)])[0] == "up"
+      and feed.kuma_state([beat(1, 900), beat(2, 60)]) is None and feed.kuma_state([]) is None,
+      feed.kuma_state([beat(1, 900), beat(2, 600), beat(0, 540), beat(0, 60)]))
+up_all = {"1": [beat(1, 120)], "2": [beat(1, 120)], "3": [beat(1, 120)]}
+fresh()
+st = {}
+kuma(up_all)
+feed.check_kuma(st, False, KUMA)
+check("Kuma: alles läuft: still", said == [] and st["kuma_down"] == {}, (said, st))
+kuma({"1": [beat(1, 900), beat(0, 300), beat(0, 60)], "2": [beat(1, 60)], "3": [beat(1, 60)]})
+feed.check_kuma(st, False, KUMA)
+since = feed.since_text(NOW - 300)
+check("Kuma: ein Ausfall: Warnung mit Name und seit wann", [(s["title"], s["body"], s["level"], s["url"]) for s in said]
+      == [("Nextcloud ist ausgefallen", f"Seit {since}.", "warn", KUMA)], said)
+said.clear()
+kuma({"1": [beat(0, 300), beat(1, 120)], "2": [beat(0, 200)], "3": [beat(2, 30), beat(0, 10)]})
+feed.check_kuma(st, False, KUMA)
+check("Kuma: zwei neue gebündelt; Nextcloud erst 2 min zurück: noch nicht wieder da",
+      [(s["title"], s["body"]) for s in said] == [("2 Dienste ausgefallen",
+       f"Caddy seit {feed.since_text(NOW - 200)}, Jellyfin seit {feed.since_text(NOW - 10)}")], said)
+said.clear()
+kuma({"1": [beat(1, 400), beat(0, 200)], "2": [beat(0, 200)], "3": [beat(0, 10)]})
+feed.check_kuma(st, False, KUMA)
+check("Kuma: Flattern: wieder aus, ohne neue Meldung", said == [] and set(st["kuma_down"]) == {"1", "2", "3"}, said)
+kuma({"1": [beat(0, 900), beat(1, 700)], "2": [beat(0, 900), beat(1, 650)], "3": [beat(0, 900), beat(1, 30)]})
+feed.check_kuma(st, False, KUMA)
+check("Kuma: 10 min stabil: wieder da, gebündelt", [s["title"] for s in said] == ["Nextcloud, Caddy sind wieder da"]
+      and list(st["kuma_down"]) == ["3"], said)
+said.clear()
+kuma({"1": [beat(1, 60)], "2": [beat(1, 60)]}, {"1": "Nextcloud", "2": "Caddy"})
+feed.check_kuma(st, False, KUMA)
+check("Kuma: Monitor nicht mehr auf der Seite: vergessen, keine Meldung", said == [] and st["kuma_down"] == {}, (said, st))
+pages.clear()
+feed.check_kuma(st, False, KUMA)
+pages[KUMA.replace("/status/", "/api/status-page/")] = "<html>Login</html>"
+feed.check_kuma(st, False, KUMA)
+feed.check_kuma(st, False, KUMA)
+check("Kuma: Seite weg (oder Login davor): einmal nach zwei Versuchen", [s["title"] for s in said] == ["Uptime Kuma nicht erreichbar"], said)
+said.clear()
+kuma(up_all)
+feed.check_kuma(st, False, KUMA)
+check("Kuma: Seite wieder da", [s["title"] for s in said] == ["Uptime Kuma wieder erreichbar"], said)
+said.clear()
+st["kuma_down"] = {"1": NOW - 9999}
+kuma(up_all)
+feed.check_kuma(st, False, KUMA.replace("meine", "andere"))
+check("Kuma: andere URL: alter Stand verworfen", said == [] and st["kuma_url"].endswith("andere"), (said, st))
+kuma({"1": [beat(0, 60)], "2": [beat(1, 60)], "3": [beat(1, 60)]})
+st = {}
+feed.check_kuma(st, True, KUMA)
+check("Kuma: Adresse prüfen für die Einstellungen (--test-kuma)",
+      [feed.test_kuma(u) for u in (KUMA + " ", "https://kuma.example.org/dashboard", KUMA.replace("meine", "fehlt"))]
+      == ["ok", "invalid", "unreachable"])
+check("Kuma: erster Lauf merkt sich nur", said == [] and list(st["kuma_down"]) == ["1"], (said, st))
+
+# 7c. GitHub (gh api notifications, made-up repos): only review requests,
+#     mentions, failed runs and replies in own threads; each update once,
+#     several in one item; without gh or signed out: silent.
+def note(id, reason, title, url, stamp="2026-10-31T10:00:00Z", repo="beispiel/werkzeug"):
+    return {"id": id, "reason": reason, "updated_at": stamp, "unread": True,
+            "subject": {"title": title, "url": url, "type": "PullRequest"},
+            "repository": {"full_name": repo, "html_url": "https://github.com/" + repo}}
+API = "https://api.github.com/repos/beispiel/werkzeug/"
+review = note("1", "review_requested", "Schnellere Suche", API + "pulls/12")
+mention = note("2", "mention", "Absturz beim Start", API + "issues/7")
+failed = note("3", "ci_activity", "CI workflow run failed for main branch", None)
+passed = note("4", "ci_activity", "CI workflow run succeeded for main branch", None)
+subscribed = note("5", "subscribed", "Neues Release", API + "releases/99")
+reply = note("6", "author", "Doku fehlt", API + "issues/3")
+check("GitHub: nur die vier Arten, Verweise und Seiten",
+      [(i["kind"], i["ref"], i["url"]) for i in feed.github_items([review, mention, failed, passed, subscribed, reply, "kaputt"])]
+      == [("review", "beispiel/werkzeug#12", "https://github.com/beispiel/werkzeug/pull/12"),
+          ("mention", "beispiel/werkzeug#7", "https://github.com/beispiel/werkzeug/issues/7"),
+          ("ci", "beispiel/werkzeug", "https://github.com/beispiel/werkzeug/actions"),
+          ("reply", "beispiel/werkzeug#3", "https://github.com/beispiel/werkzeug/issues/3")]
+      and feed.github_items({"message": "Bad credentials"}) == [])
+check("GitHub: fremde Adressen öffnen nur die Benachrichtigungen",
+      feed.github_url({"repository": {"html_url": "https://evil.example/x/y"}, "subject": {"url": "https://evil.example/repos/a/b/pulls/1"}})
+      == "https://github.com/notifications")
+real_which = feed.shutil.which
+feed.shutil.which = lambda program: "/usr/bin/gh" if program == "gh" else None
+gh = lambda *notes: fresh(gh=(0, json.dumps(list(notes))))
+st = {}
+gh(review)
+feed.check_github(st, False)
+check("GitHub: erster Lauf mit gh merkt sich nur", said == [] and st["github_seen"] == {"1": review["updated_at"]}, (said, st))
+gh(review, mention)
+feed.check_github(st, False)
+check("GitHub: eine neue: Titel, Text, Seite", [(s["title"], s["body"], s["level"], s["source"], s["url"]) for s in said]
+      == [("Du wurdest in beispiel/werkzeug#7 erwähnt", "Absturz beim Start", "info", "github",
+           "https://github.com/beispiel/werkzeug/issues/7")], said)
+gh(review, mention)
+feed.check_github(st, False)
+check("GitHub: schon gesehen: still", said == [], said)
+gh(dict(review, updated_at="2026-10-31T11:00:00Z"), mention, failed, reply)
+feed.check_github(st, False)
+check("GitHub: mehrere gebündelt, fehlgeschlagene Action warnt", [(s["title"], s["body"], s["level"], s["url"]) for s in said]
+      == [("3 Neuigkeiten auf GitHub", "Review beispiel/werkzeug#12, Action fehlgeschlagen beispiel/werkzeug, Antwort beispiel/werkzeug#3",
+           "warn", "https://github.com/notifications")], said)
+fresh(gh=(4, ""))
+feed.check_github(st, False)
+fresh(gh=(0, "kein json"))
+feed.check_github(st, False)
+check("GitHub: abgemeldet, offline, kaputte Antwort: still", said == [], said)
+feed.shutil.which = lambda program: None
+gh(note("9", "mention", "x", API + "issues/9"))
+st = {}
+feed.check_github(st, False)
+check("GitHub: ohne gh unsichtbar", said == [] and st == {}, (said, st))
+feed.shutil.which = real_which
+
+# 8. Morning: after 7:00 once a day, with what the other checks remembered.
+class Clock(datetime):
+    hour_now = 8
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 10, 29, cls.hour_now, 5)
+real_datetime = feed.datetime
+feed.datetime = Clock
+feed.first_name = lambda: "Lea"
+try:
+    fresh()
+    st = {"update_counts": {"pacman": 3}, "omarchy_ready": True}
+    feed.morning(st)
+    feed.morning(st)
+    check("Morgengruß: einmal am Tag mit Tagesstand", [(s["title"], s["body"]) for s in said]
+          == [("Guten Morgen, Lea", "Updates: Omarchy, 3 Pakete")], said)
+    Clock.hour_now = 6
+    fresh()
+    feed.morning({})
+    check("Morgengruß: vor 7 Uhr nicht", said == [])
+finally:
+    feed.datetime = real_datetime
+
+# 9. config.json: Kuma only when set, GitHub unless false, odd values are off.
+os.makedirs(os.path.dirname(feed.buddy.CONFIG), exist_ok=True)
+off = {"kuma": "", "github": True}
+for text, want in (('{"feed": {"pi": " pi5 ", "board": true, "kuma": "https://k/status/a ", "github": false}}',
+                    {"kuma": "https://k/status/a", "github": False}),
+                   ('{"feed": {"kuma": true}}', off),
+                   ('{"feed": []}', off),
+                   ('kaputt', off)):
+    with open(feed.buddy.CONFIG, "w") as f:
+        f.write(text)
+    check(f"Quellen aus config.json: {text}", feed.feed_sources() == want, feed.feed_sources())
+
+# Rückfall every run (#149): omarchy-buddy-check --rueckfall from this checkout.
+calls = []
+feed.run = lambda cmd, timeout=30: calls.append((cmd, timeout)) or (0, "")
+feed.check_fallback({}, False)
+check("Rückfall-Prüfung bei jedem Lauf", calls == [([os.path.realpath(os.path.join(os.path.dirname(FEED), "omarchy-buddy-check")),
+                                                     "--rueckfall"], 600)], calls)
+
+shutil.rmtree(HOME, ignore_errors=True)
+done()

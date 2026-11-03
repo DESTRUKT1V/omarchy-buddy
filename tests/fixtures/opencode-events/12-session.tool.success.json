@@ -1,0 +1,7 @@
+{
+  "session_id": "ses_e71db07e3ffemrMbnFCoGekBPb",
+  "cwd": "/home/user/projekt",
+  "hook_event_name": "session.tool.success",
+  "tool_name": "shell",
+  "tool_use_id": "call_1"
+}

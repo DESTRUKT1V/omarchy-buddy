@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# Spotify's "+" in the player window (#121): saves the playing track to the
+# user's Liked Songs through the Web API, with the user's own Spotify app
+# (developer.spotify.com; its Client ID, no secret: PKCE).
+#
+#   omarchy-buddy-spotify connect [CLIENT_ID]  sign in once in the browser
+#                                              (without an ID: the one used last)
+#   omarchy-buddy-spotify status               connected or not
+#   omarchy-buddy-spotify check  spotify:track:ID   saved already?
+#   omarchy-buddy-spotify save   spotify:track:ID   save to Liked Songs
+#   omarchy-buddy-spotify remove spotify:track:ID   take it out again (#163)
+#   omarchy-buddy-spotify disconnect           forget the tokens
+#
+# Every command prints one JSON line for the island (Spotify.qml), e.g.
+# {"saved": true} or {"error": "expired"}; errors: unconnected, expired
+# (sign in again), forbidden (the app may not: user not added, scope
+# missing), offline, limit (too many requests), port (the redirect port is
+# taken), cancelled, failed. Always exit 0. The tokens live in
+# ~/.local/state/omarchy-buddy/spotify.json (600) and are never printed.
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from buddy import STATE_DIR, save_json  # noqa: E402
+from texts import t  # noqa: E402
+
+# Overridable only so tests/spotify-test.py can talk to a stand-in server
+# (and not collide with a sign-in running for real).
+ACCOUNTS = os.environ.get("OMARCHY_BUDDY_SPOTIFY_ACCOUNTS", "https://accounts.spotify.com")
+API = os.environ.get("OMARCHY_BUDDY_SPOTIFY_API", "https://api.spotify.com/v1")
+PORT = int(os.environ.get("OMARCHY_BUDDY_SPOTIFY_PORT") or 43821)
+REDIRECT = f"http://127.0.0.1:{PORT}/callback"
+SCOPES = "user-library-read user-library-modify"
+FILE = os.path.join(STATE_DIR, "spotify.json")
+WAIT = 300  # seconds the browser sign-in may take
+
+
+class Fail(Exception):
+    pass
+
+
+def out(**data):
+    print(json.dumps(data), flush=True)
+
+
+def load():
+    try:
+        with open(FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def store(data):
+    save_json(FILE, data)
+
+
+def request(method, url, data=None, token=None):
+    """(status, parsed body); HTTP errors are a status, no network is Fail("offline")."""
+    headers = {}
+    body = None
+    if data is not None:
+        body = urllib.parse.urlencode(data).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    except (urllib.error.URLError, OSError):
+        raise Fail("offline")
+    try:
+        return status, json.loads(raw) if raw else None
+    except ValueError:
+        return status, None
+
+
+def tokens(data, reply):
+    """Takes a token reply into the stored data (Spotify may or may not send a new refresh token)."""
+    if not isinstance(reply, dict) or not reply.get("access_token"):
+        raise Fail("failed")
+    data["access_token"] = reply["access_token"]
+    data["expires_at"] = time.time() + int(reply.get("expires_in") or 3600) - 60
+    if reply.get("refresh_token"):
+        data["refresh_token"] = reply["refresh_token"]
+    if "scope" in reply:
+        data["scope"] = reply["scope"]
+    store(data)
+
+
+def access():
+    data = load()
+    if not data.get("refresh_token") or not data.get("client_id"):
+        raise Fail("unconnected")
+    if data.get("access_token") and time.time() < float(data.get("expires_at") or 0):
+        return data["access_token"]
+    status, reply = request("POST", ACCOUNTS + "/api/token", {
+        "grant_type": "refresh_token", "refresh_token": data["refresh_token"], "client_id": data["client_id"]})
+    if status in (400, 401):  # invalid_grant: revoked, or the app changed
+        raise Fail("expired")
+    if status != 200:
+        raise Fail(failure(status))
+    tokens(data, reply)
+    return data["access_token"]
+
+
+def failure(status):
+    return {401: "expired", 403: "forbidden", 429: "limit"}.get(status, "failed")
+
+
+def library(method, uri):
+    if not uri.startswith("spotify:track:") or len(uri) > 80:
+        raise Fail("failed")
+    url = API + "/me/library" + ("/contains" if method == "GET" else "") + "?uris=" + urllib.parse.quote(uri)
+    for attempt in (1, 2):
+        status, reply = request(method, url, token=access())
+        if status == 401 and attempt == 1:  # revoked early: one fresh token, then give up
+            data = load()
+            data.pop("access_token", None)
+            store(data)
+            continue
+        break
+    if status != 200:
+        raise Fail(failure(status))
+    if method == "GET":
+        if not isinstance(reply, list) or not reply:
+            raise Fail("failed")
+        return bool(reply[0])
+    return method == "PUT"
+
+
+def connect(client_id):
+    data = load()
+    client_id = (client_id or data.get("client_id") or "").strip()
+    if not client_id.isalnum() or len(client_id) > 64:
+        raise Fail("clientid")
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(16)
+    answer = {}
+
+    class Callback(BaseHTTPRequestHandler):
+        def do_GET(self):
+            url = urllib.parse.urlparse(self.path)
+            if url.path != "/callback":
+                self.send_error(404)
+                return
+            q = urllib.parse.parse_qs(url.query)
+            if q.get("state", [""])[0] == state:
+                answer["code"] = q.get("code", [""])[0]
+                answer["error"] = q.get("error", [""])[0]
+            ok = bool(answer.get("code"))
+            page = f"<!doctype html><meta charset=utf-8><title>Omarchy-Buddy</title>" \
+                   f"<p style='font:16px sans-serif;margin:3em'>{t('spotify.connected' if ok else 'spotify.notConnected')}</p>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(page.encode())
+
+        def log_message(self, *args):  # the query holds the code: never into a log
+            pass
+
+    try:
+        server = HTTPServer(("127.0.0.1", PORT), Callback)
+    except OSError:
+        raise Fail("port")
+    server.timeout = 1
+    url = ACCOUNTS + "/authorize?" + urllib.parse.urlencode({
+        "response_type": "code", "client_id": client_id, "scope": SCOPES, "redirect_uri": REDIRECT,
+        "state": state, "code_challenge_method": "S256", "code_challenge": challenge})
+    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    end = time.time() + WAIT
+    with server:
+        while not answer and time.time() < end:
+            server.handle_request()
+    if not answer.get("code"):
+        raise Fail("cancelled")
+    status, reply = request("POST", ACCOUNTS + "/api/token", {
+        "grant_type": "authorization_code", "code": answer["code"], "redirect_uri": REDIRECT,
+        "client_id": client_id, "code_verifier": verifier})
+    if status != 200:
+        raise Fail(failure(status))
+    tokens({"client_id": client_id}, reply)
+    if not load().get("refresh_token"):
+        raise Fail("failed")
+
+
+METHODS = {"check": "GET", "save": "PUT", "remove": "DELETE"}
+
+
+def main(args):
+    cmd = args[0] if args else ""
+    try:
+        if cmd == "connect":
+            connect(args[1] if len(args) > 1 else "")
+            out(connected=True)
+        elif cmd == "status":
+            data = load()
+            out(connected=bool(data.get("refresh_token")), clientId=data.get("client_id", ""), redirect=REDIRECT)
+        elif cmd in METHODS and len(args) > 1:
+            out(uri=args[1], saved=library(METHODS[cmd], args[1]))
+        elif cmd == "disconnect":
+            data = load()
+            try:
+                os.remove(FILE)
+            except FileNotFoundError:
+                pass
+            # The Client ID is no secret: kept, so connecting again needs only the browser.
+            if data.get("client_id"):
+                store({"client_id": data["client_id"]})
+            out(connected=False)
+        else:
+            out(error="usage")
+    except Fail as e:
+        out(error=str(e), **({"uri": args[1]} if cmd in METHODS and len(args) > 1 else {}))
+    except Exception:  # never a traceback (it could show a token) and never a crash
+        out(error="failed")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

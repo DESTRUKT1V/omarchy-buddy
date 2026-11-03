@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# Installs the updates omarchy-buddy-feed found (a click on its "Updates: …"
+# item). Without arguments it opens a floating terminal and runs itself
+# there with --run: one command after the other (lib/updates.py steps; on
+# Omarchy `omarchy update` last), a failed one does not stop the rest, and
+# afterwards the feed checks again, so the item goes away.
+#
+#   omarchy-buddy-update          open the terminal
+#   omarchy-buddy-update --run    the updates, in this terminal
+
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+
+BIN = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(BIN), "lib"))
+import buddy  # noqa: E402
+import updates  # noqa: E402
+from texts import t  # noqa: E402
+
+
+def terminal():
+    me = os.path.join(BIN, "omarchy-buddy-update")
+    if shutil.which("omarchy-launch-floating-terminal-with-presentation"):
+        # Omarchy's own: floating, its logo first, "Done" and a key at the end.
+        cmd = ["omarchy-launch-floating-terminal-with-presentation", shlex.join([me, "--run"])]
+    elif shutil.which("xdg-terminal-exec"):
+        cmd = ["xdg-terminal-exec", me, "--run", "--wait"]
+    elif os.environ.get("TERMINAL"):
+        cmd = [os.environ["TERMINAL"], "-e", me, "--run", "--wait"]
+    else:
+        return 1
+    subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
+def run(wait):
+    try:
+        with open(os.path.join(buddy.STATE_DIR, "feed.json")) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        st = {}
+    buddy.private_dir(buddy.STATE_DIR)
+    with buddy.private_open(os.path.join(buddy.STATE_DIR, "updates-ran")):
+        pass  # the feed checks again on its next run, even after a restart
+    todo = updates.steps(st.get("update_counts", {}), st.get("omarchy_ready", False), shutil.which)
+    if not todo:
+        print(t("updates.none"))
+    failed = []
+    for cmd in todo:
+        print("\n\033[1m" + t("updates.step", command=shlex.join(cmd)) + "\033[0m", flush=True)
+        try:
+            code = subprocess.call(cmd)
+        except OSError:
+            code = -1
+        except KeyboardInterrupt:
+            code = 130
+        if code:
+            failed.append(shlex.join(cmd))
+    print("\n" + t("updates.done"), flush=True)
+    subprocess.call([os.path.join(BIN, "omarchy-buddy-feed"), "--now"])
+    if failed:
+        print("\033[31m" + t("updates.failed", commands=", ".join(failed)) + "\033[0m")
+    if wait:
+        try:
+            input(t("updates.enter"))
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run("--wait" in sys.argv) if "--run" in sys.argv else terminal())

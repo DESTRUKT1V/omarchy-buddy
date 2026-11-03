@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# O-Morchy's emotions (#177): each in real size beside the others (pill,
+# pop-up, "Weniger Bewegung"), playing for 3 s every 4 s, with name and the
+# event that plays it. Runs its own Quickshell from this
+# checkout's shell/ beside the Omarchy shell (theme from Omarchy's Commons),
+# so the island and its settings stay as they are; closes it at the end.
+#
+#   tests/emotes               20 s on screen
+#   tests/emotes --dauer 60
+#   tests/emotes --fotos DIR   also one GIF and one still per emote (grim, magick)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+secs=20
+photos=""
+while (($#)); do
+  case $1 in
+    --dauer) secs=$2; shift 2 ;;
+    --fotos) photos=$(realpath -m "$2"); shift 2 ;;
+    *) sed -n '2,10p' "$0"; exit 1 ;;
+  esac
+done
+
+dir=$(mktemp -d)
+pid=""
+cleanup() { trap - EXIT INT TERM; [[ -n $pid ]] && kill "$pid" 2>/dev/null; wait 2>/dev/null; rm -rf "$dir"; }
+trap cleanup EXIT INT TERM
+
+ln -s "${OMARCHY_PATH:-/usr/share/omarchy}/shell/Commons" "$dir/Commons"
+ln -s "$PWD/shell" "$dir/buddy"
+cp tests/emotes.qml "$dir/shell.qml"
+quickshell -p "$dir" >"$dir/log" 2>&1 &
+pid=$!
+
+for _ in $(seq 50); do grep -q PLAY "$dir/log" 2>/dev/null && break; sleep 0.2; done
+if ! grep -q PLAY "$dir/log"; then
+  echo "Die Vorschau startet nicht:" >&2; tail -20 "$dir/log" >&2; exit 2
+fi
+grep -iE 'error|warn' "$dir/log" | grep -v 'PLAY\|ROW' >&2 || true
+
+if [[ -n $photos ]]; then
+  mkdir -p "$photos"
+  # The window sits 40 px below the top, centred on the focused screen; the
+  # preview logged its size and each row's place in it.
+  sw=$(hyprctl monitors -j | jq '.[] | select(.focused) | .x + (.width / 2 | floor)')
+  read -r _ ww wh < <(grep -o 'WIN .*' "$dir/log")
+  left=$((sw - ww / 2))
+  shot() { grim -g "$left,40 ${ww}x$wh" "$1"; }
+  # From the start of the next play: frames for 1.2 s, then the held end at about 2.5 s.
+  n=$(grep -c PLAY "$dir/log")
+  until (($(grep -c PLAY "$dir/log") > n)); do sleep 0.02; done
+  start=$(date +%s%N) i=0
+  while (($(date +%s%N) - start < 1200000000)); do shot "$dir/f$(printf %02d $i).png"; i=$((i + 1)); done
+  delay=$((($(date +%s%N) - start) / 10000000 / i))  # GIF delay per frame, in 1/100 s
+  sleep 1.2; shot "$dir/fend.png"
+  grep -o 'ROW .*' "$dir/log" | while read -r _ name x y w h; do
+    crop="$((w + 8))x$((h + 8))+$((x - 4))+$((y - 4))"
+    magick -delay "$delay" -loop 0 "$dir"/f??.png -delay 200 "$dir/fend.png" -crop "$crop" +repage "$photos/$name.gif"
+    magick "$dir/fend.png" -crop "$crop" +repage "$photos/$name.png"
+  done
+  cp "$dir/fend.png" "$photos/alle.png"
+  echo "Fotos in $photos"
+fi
+sleep "$secs"

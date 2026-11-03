@@ -1,0 +1,16 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "scratchpad_dir": "/tmp/claude-1000/-home-user-projekt/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Ich habe `farben.txt` im Projektordner angelegt; sie enthält Farbe Rot, Tiere Hund und Katze sowie das Datum 2026-10-28.",
+  "background_tasks": [],
+  "session_crons": []
+}

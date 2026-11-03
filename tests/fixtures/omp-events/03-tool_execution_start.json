@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "tool_execution_start",
+  "session_id": "01a18e24-1685-7739-86b1-5e7e02d32d29",
+  "cwd": "/home/user/projekt",
+  "tool_name": "bash",
+  "tool_use_id": "call_1",
+  "tool_input": {
+    "command": "echo hallo",
+    "description": "say hello"
+  }
+}

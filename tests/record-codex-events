@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+# Record real Codex CLI hook inputs as test data (tests/fixtures/codex-events/).
+#
+# Codex runs interactively in tmux, in a throwaway CODEX_HOME and project,
+# against a small local stand-in for OpenAI's Responses API that plays a
+# fixed script (no account, no costs): read a file, delete it (asks for
+# permission, a hook allows it the way the island does), create a file with
+# apply_patch, a turn interrupted with Escape, /exit. Your own ~/.codex and
+# its hooks stay out of it. The hooks are trusted with the hashes
+# omarchy-buddy-setup writes, so a run also checks those against the
+# installed Codex (else Codex asks "Hooks need review" and the run stops).
+# Run it again after a Codex update and look at `git diff tests/fixtures`.
+#
+#   tests/record-codex-events
+import glob, http.server, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+OUT = os.path.join(HERE, "fixtures", "codex-events")
+EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop",
+          "SubagentStart", "SubagentStop", "Interrupt", "SessionEnd"]
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+setup = load("setup", os.path.join(REPO, "bin", "omarchy-buddy-setup"))
+recorder = load("recorder", os.path.join(HERE, "record-hook-events"))
+
+PATCH = "*** Begin Patch\n*** Add File: farben.txt\n+rot\n+blau\n*** End Patch\n"
+# What the stand-in answers: per prompt one step per tool result so far.
+# Anything else (Codex asks for a session title on the side) gets a title.
+TURNS = {"Lies notiz.txt und lösch sie": [
+             {"cmd": "cat notiz.txt"},
+             {"cmd": "rm notiz.txt", "sandbox_permissions": "require_escalated", "justification": "Datei löschen"},
+             {"say": "Erledigt."}],
+         "Leg farben.txt an": [{"patch": PATCH}, {"say": "Angelegt."}],
+         "Warte": [{"say": "Zu spät.", "delay": 20}]}
+
+DECIDER = r"""#!/usr/bin/env python3
+import json, sys
+json.load(sys.stdin)
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}))
+"""
+
+
+def step_for(items):
+    """The step for a request's input: its last prompt of ours and how many
+    tool results came since."""
+    for i in range(len(items) - 1, -1, -1):
+        content = items[i].get("content") if items[i].get("role") == "user" else None
+        text = content[0].get("text") if isinstance(content, list) and content and isinstance(content[0], dict) else None
+        if text in TURNS:
+            done = sum(1 for x in items[i:] if x.get("type") in ("function_call_output", "custom_tool_call_output"))
+            return TURNS[text][min(done, len(TURNS[text]) - 1)]
+    return {"say": "Titel"}
+
+
+def stand_in():
+    count = [0]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            n = count[0]
+            count[0] += 1
+            s = step_for([i for i in body.get("input") or [] if isinstance(i, dict)])
+            time.sleep(s.get("delay", 0))
+            if "patch" in s:
+                item = {"type": "custom_tool_call", "call_id": f"call_{n}", "name": "apply_patch", "input": s["patch"]}
+            elif "cmd" in s:
+                args = {k: v for k, v in s.items() if k != "delay"}
+                args["cmd"] = args.pop("cmd")
+                item = {"type": "function_call", "call_id": f"call_{n}", "name": "exec_command", "arguments": json.dumps(args)}
+            else:
+                item = {"type": "message", "role": "assistant", "id": f"msg_{n}",
+                        "content": [{"type": "output_text", "text": s["say"]}]}
+            usage = {"input_tokens": 0, "input_tokens_details": None, "output_tokens": 0,
+                     "output_tokens_details": None, "total_tokens": 0}
+            events = [{"type": "response.created", "response": {"id": f"resp_{n}"}},
+                      {"type": "response.output_item.done", "item": item},
+                      {"type": "response.completed", "response": {"id": f"resp_{n}", "usage": usage}}]
+            body = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:  # interrupted: Codex hung up
+                pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def prepare(tmp):
+    home, project, raw = (os.path.join(tmp, d) for d in ("codex-home", "projekt", "raw"))
+    for d in (home, project, raw):
+        os.makedirs(d)
+    with open(os.path.join(project, "notiz.txt"), "w") as f:
+        f.write("hallo\n")
+    rec = os.path.join(tmp, "record.sh")
+    with open(rec, "w") as f:
+        f.write('#!/bin/sh\nf=$(mktemp -p "%s" "$(date +%%s%%N)-XXXX.json"); cat > "$f"; exit 0\n' % raw)
+    decider = os.path.join(tmp, "decide.py")
+    with open(decider, "w") as f:
+        f.write(DECIDER)
+    for p in (rec, decider):
+        os.chmod(p, 0o755)
+    hooks = {"hooks": {e: [{"hooks": [{"type": "command", "command": rec}]}] for e in EVENTS}}
+    hooks["hooks"]["PermissionRequest"].append({"hooks": [{"type": "command", "command": decider}]})
+    path = os.path.join(home, "hooks.json")
+    with open(path, "w") as f:
+        json.dump(hooks, f)
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[features]\nhooks = true\n\n[tui]\nscreen_reader_detection_done = true\n\n")
+        f.write(setup.trust_toml(setup.codex_trust(path, hooks["hooks"], lambda g: True)))
+    with open(os.path.join(home, "auth.json"), "w") as f:
+        json.dump({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-stand-in"}, f)
+    return home, project, raw
+
+
+def record(tmp):
+    home, project, raw = prepare(tmp)
+    server = stand_in()
+    tmux = ["tmux", "-L", "codex-events-" + str(os.getpid())]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ORCA_", "CODEX_")) and k != "TMUX"}
+    url = f"http://127.0.0.1:{server.server_port}/v1"
+    command = (f"CODEX_HOME={home} CODEX_SQLITE_HOME={home} codex -s read-only -a on-request "
+               f"-c 'openai_base_url=\"{url}\"'")
+    subprocess.run(tmux + ["new-session", "-d", "-x", "160", "-y", "50", "-c", project, command], env=env, check=True)
+
+    def screen():
+        return subprocess.run(tmux + ["capture-pane", "-p"], capture_output=True, text=True).stdout
+
+    def say(text):
+        subprocess.run(tmux + ["send-keys", "-l", text])
+        time.sleep(0.5)
+        subprocess.run(tmux + ["send-keys", "Enter"])
+
+    def wait_for(text, seconds):
+        for _ in range(seconds * 2):
+            time.sleep(0.5)
+            if text in screen():
+                return True
+        sys.exit(f"„{text}“ kam nicht, Testdaten bleiben wie sie sind. Bildschirm:\n{screen()}")
+
+    try:
+        wait_for("Ask Codex", 30)
+        if "need review" in screen():
+            sys.exit("Codex will die Hooks prüfen lassen: die Trust-Hashes stimmen nicht mehr (Setup anpassen).")
+        say("Lies notiz.txt und lösch sie")
+        wait_for("Erledigt.", 30)
+        say("Leg farben.txt an")
+        wait_for("Angelegt.", 30)
+        say("Warte")
+        time.sleep(4)
+        subprocess.run(tmux + ["send-keys", "Escape"])
+        wait_for("interrupted", 15)
+        say("/exit")
+        time.sleep(3)
+    finally:
+        subprocess.run(tmux + ["kill-server"], capture_output=True)
+        server.shutdown()
+    events = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(raw, "*.json")))]
+    names = {e.get("hook_event_name") for e in events}
+    needed = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop",
+              "Interrupt", "SessionEnd"}
+    if not needed <= names:
+        sys.exit(f"Lauf unvollständig ({', '.join(sorted(map(str, names)))}), Testdaten bleiben wie sie sind.")
+    # Codex keeps its transcripts in CODEX_HOME.
+    for e in events:
+        if isinstance(e.get("transcript_path"), str):
+            e["transcript_path"] = e["transcript_path"].replace(home, "/home/user/.codex")
+    return project, events
+
+
+def main():
+    version = subprocess.run(["codex", "--version"], capture_output=True, text=True).stdout.strip()
+    print(version, "– nehme auf …")
+    tmp = tempfile.mkdtemp(prefix="codex-events-")
+    try:
+        project, events = record(tmp)
+        recorder.save(project, events, OUT, version)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("jetzt: git diff tests/fixtures")
+
+
+if __name__ == "__main__":
+    main()

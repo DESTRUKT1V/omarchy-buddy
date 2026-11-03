@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+# Record real Claude Code hook inputs as test data (tests/fixtures/).
+#
+# Two short Haiku sessions in throwaway projects whose only hooks write their
+# stdin to files; your own hooks (and the island) stay out of it
+# (--setting-sources project):
+#   hook-events/              `claude -p`: tools, a failure, a subagent, permissions
+#   hook-events-interactive/  interactive in tmux (AskUserQuestion and plan mode
+#                             only exist there): a question with two parts, a plan
+#                             sent back once and then approved in auto mode,
+#                             answered by a small hook the way the island does
+#   statusline.json           what that session hands its status line (usage)
+# The recorded events are anonymised (ids, paths) and replace the old
+# fixtures. Run it again after a Claude Code update and look at
+# `git diff tests/fixtures`: a changed field shows up there, and
+# tests/hook-fixtures.test.js shows whether the hook still copes. Costs two
+# short Haiku runs.
+#
+#   tests/record-hook-events
+import glob, json, os, re, shutil, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIXTURES = os.path.join(HERE, "fixtures")
+EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+          "PermissionRequest", "PermissionDenied", "Notification", "Stop", "StopFailure", "SubagentStop",
+          "SessionEnd"]
+PROMPT = ("Arbeite diese Schritte nacheinander ab, ohne nachzufragen, und mach weiter, auch wenn "
+          "ein Schritt abgelehnt wird oder fehlschlägt: 1. Lies notiz.txt. 2. Führe `cat fehlt.txt` aus. "
+          "3. Starte mit dem Agent-Werkzeug einen Subagenten (subagent_type general-purpose), der "
+          "`rm notiz.txt` ausführt. 4. Führe selbst `rm notiz.txt` aus. Antworte am Ende mit einem Satz.")
+
+ASK_PROMPT = ("Frag mich mit dem Werkzeug AskUserQuestion in einem Aufruf zwei Fragen: welche Farbe "
+              "(Rot oder Blau, eine Auswahl) und welche Tiere (Hund, Katze, Maus; multiSelect true). "
+              "Schreib dann einen kurzen Plan, eine Datei farben.txt mit meinen Antworten anzulegen, und "
+              "leg ihn mit ExitPlanMode zur Freigabe vor. Nach der Freigabe setz ihn um und antworte mit "
+              "einem Satz.")
+
+# Answers like the island: the first option (the first two when several
+# count), the plan once sent back with feedback, then approved in auto mode.
+DECIDER = r"""#!/usr/bin/env python3
+import json, os, sys
+e = json.load(sys.stdin)
+tool, ti = e.get("tool_name"), e.get("tool_input") or {}
+if tool == "AskUserQuestion":
+    answers = {q["question"]: ", ".join(o["label"] for o in q["options"][:2 if q.get("multiSelect") else 1])
+               for q in ti.get("questions", [])}
+    out = {"behavior": "allow", "updatedInput": dict(ti, answers=answers)}
+elif tool == "ExitPlanMode":
+    seen = os.path.join(os.path.dirname(__file__), "plan-seen")
+    if not os.path.exists(seen):
+        open(seen, "w").close()
+        out = {"behavior": "deny", "message": "Bitte schreib zusätzlich das heutige Datum in die Datei."}
+    else:
+        out = {"behavior": "allow", "updatedInput": ti,
+               "updatedPermissions": [{"type": "setMode", "mode": "auto", "destination": "session"}]}
+else:
+    sys.exit(0)
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": out}}))
+"""
+
+SESSION = "00000000-0000-4000-8000-000000000001"
+PROJECT = "/home/user/projekt"
+
+
+def setup(tmp, extra=None):
+    """A throwaway project whose hooks record every event into raw/."""
+    project, raw = os.path.join(tmp, "projekt"), os.path.join(tmp, "raw")
+    os.makedirs(os.path.join(project, ".claude"))
+    os.makedirs(raw)
+    recorder = os.path.join(tmp, "record.sh")
+    with open(recorder, "w") as f:
+        f.write('#!/bin/sh\nf=$(mktemp -p "%s" "$(date +%%s%%N)-XXXX.json"); cat > "$f"; exit 0\n' % raw)
+    os.chmod(recorder, 0o755)
+    hooks = {e: [{"hooks": [{"type": "command", "command": recorder}]}] for e in EVENTS}
+    settings = {"hooks": hooks}
+    if extra:
+        extra(settings, tmp)
+    with open(os.path.join(project, ".claude", "settings.json"), "w") as f:
+        json.dump(settings, f)
+    return project, raw
+
+
+def recorded(raw, needed):
+    files = sorted(glob.glob(os.path.join(raw, "*.json")))
+    events = [json.load(open(p)) for p in files]
+    names = {e.get("hook_event_name") for e in events}
+    if not needed <= names:
+        # A failed run must not wipe the fixtures.
+        sys.exit(f"Lauf unvollständig ({', '.join(sorted(names)) or 'nichts'}), Testdaten bleiben wie sie sind.")
+    return events
+
+
+def record_print(tmp):
+    project, raw = setup(os.path.join(tmp, "p"))
+    with open(os.path.join(project, "notiz.txt"), "w") as f:
+        f.write("hallo\n")
+    subprocess.run(["claude", "-p", "--setting-sources", "project", "--model", "haiku",
+                    "--allowedTools=Bash(cat fehlt.txt)"],
+                   input=PROMPT, text=True, cwd=project, timeout=300, stdout=subprocess.DEVNULL)
+    return project, recorded(raw, {"UserPromptSubmit", "PermissionRequest", "Stop"})
+
+
+def record_interactive(tmp):
+    def extra(settings, base):
+        decider = os.path.join(base, "decide.py")
+        with open(decider, "w") as f:
+            f.write(DECIDER)
+        os.chmod(decider, 0o755)
+        settings["hooks"]["PermissionRequest"].append({"hooks": [{"type": "command", "command": decider}]})
+        os.makedirs(os.path.join(base, "status"))
+        status = os.path.join(base, "status.sh")
+        with open(status, "w") as f:
+            f.write('#!/bin/sh\ncat > "%s/status/$(date +%%s%%N).json"; echo aufnahme\n' % base)
+        os.chmod(status, 0o755)
+        settings["statusLine"] = {"type": "command", "command": status}
+
+    base = os.path.join(tmp, "i")
+    project, raw = setup(base, extra)
+    tmux = ["tmux", "-L", "hook-events-" + str(os.getpid())]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ORCA_") and k != "TMUX"}
+    subprocess.run(tmux + ["new-session", "-d", "-x", "160", "-y", "50", "-c", project,
+                           "claude --setting-sources project --model haiku --permission-mode plan"], env=env, check=True)
+
+    def screen():
+        return subprocess.run(tmux + ["capture-pane", "-p"], capture_output=True, text=True).stdout
+
+    def keys(*k, literal=False):
+        subprocess.run(tmux + ["send-keys"] + (["-l"] if literal else []) + list(k))
+
+    try:
+        for _ in range(30):  # a new folder asks for trust first
+            time.sleep(1)
+            if "trust this folder" in screen():
+                keys("Down", "Enter")
+                time.sleep(3)
+                break
+            if "❯" in screen():
+                break
+        keys(ASK_PROMPT, literal=True)
+        time.sleep(1)
+        keys("Enter")
+        done = os.path.join(project, "farben.txt")
+        for _ in range(240):  # until the file is there and the run has stopped
+            time.sleep(1)
+            stops = [p for p in glob.glob(os.path.join(raw, "*.json"))
+                     if json.load(open(p)).get("hook_event_name") == "Stop"]
+            if os.path.exists(done) and stops and os.path.getmtime(max(stops)) >= os.path.getmtime(done):
+                break
+        keys("/exit", literal=True)
+        time.sleep(1)
+        keys("Enter")
+        time.sleep(4)
+    finally:
+        subprocess.run(tmux + ["kill-server"], capture_output=True)
+    events = recorded(raw, {"PermissionRequest", "PostToolUse", "Stop"})
+    tools = {e.get("tool_name") for e in events if e.get("hook_event_name") == "PermissionRequest"}
+    if not {"AskUserQuestion", "ExitPlanMode"} <= tools:
+        sys.exit(f"Frage oder Plan fehlt ({', '.join(sorted(map(str, tools)))}), Testdaten bleiben wie sie sind.")
+    lines = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(base, "status", "*.json")))]
+    with_limits = [line for line in lines if line.get("rate_limits")]
+    return project, events, (with_limits or lines or [None])[-1]
+
+
+def main():
+    version = subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip()
+    print("Claude Code", version, "– nehme auf …")
+    tmp = tempfile.mkdtemp(prefix="hook-events-")
+    try:
+        print("1/2 claude -p")
+        project, events = record_print(tmp)
+        print("2/2 interaktiv (tmux)")
+        project_i, events_i, status = record_interactive(tmp)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    save(project, events, os.path.join(FIXTURES, "hook-events"), version)
+    save(project_i, events_i, os.path.join(FIXTURES, "hook-events-interactive"), version)
+    if status:
+        with open(os.path.join(FIXTURES, "statusline.json"), "w") as f:
+            json.dump(anonymiser(project_i, {})(status), f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print("  statusline.json", "mit Limits" if status.get("rate_limits") else "ohne Limits")
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("jetzt: git diff tests/fixtures")
+
+
+def anonymiser(project, ids):
+    real_project = os.path.realpath(project)
+
+    def anon(value):
+        if isinstance(value, dict):
+            return {k: anon(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [anon(v) for v in value]
+        if not isinstance(value, str):
+            return value
+        for path in (real_project, project):
+            value = value.replace(path, PROJECT)
+        value = value.replace(re.sub(r"[^A-Za-z0-9]", "-", real_project), PROJECT.replace("/", "-"))
+        value = re.sub(r"/home/[^/]+/", "/home/user/", value)
+        # Ids: the same id stays the same placeholder across events.
+        value = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                       lambda m: ids.setdefault(m.group(0), f"00000000-0000-4000-8000-{len(ids) + 1:012d}"), value)
+        value = re.sub(r"\ba[0-9a-f]{16}\b", lambda m: ids.setdefault(m.group(0), f"agent{len(ids) + 1:04d}"), value)
+        return re.sub(r"\b(toolu|msg)_[A-Za-z0-9]{10,}",
+                      lambda m: ids.setdefault(m.group(0), f"{m.group(1)}_test{len(ids) + 1:04d}"), value)
+    return anon
+
+
+def save(project, events, out, version):
+    ids = {events[0].get("session_id", ""): SESSION}
+    anon = anonymiser(project, ids)
+    for old in glob.glob(os.path.join(out, "*.json")):
+        os.remove(old)
+    os.makedirs(out, exist_ok=True)
+    for n, event in enumerate(events, 1):
+        event = anon(event)
+        name = f"{n:02d}-{event.get('hook_event_name', 'Unbekannt')}.json"
+        with open(os.path.join(out, name), "w") as f:
+            json.dump(event, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print(" ", name, event.get("tool_name", ""))
+    with open(os.path.join(out, "VERSION"), "w") as f:
+        f.write(version + "\n")
+    print(f"{len(events)} Ereignisse in {os.path.relpath(out)}")
+
+
+if __name__ == "__main__":
+    main()

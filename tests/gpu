@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# What the island costs to draw, measured for a while in the running shell:
+# frames its window draws per second (Probe.qml counts them), CPU of
+# quickshell and Hyprland, and the graphics card's load and power
+# (nvidia-smi, if there; the whole card, so other windows count too).
+# Only reads.
+#
+#   tests/gpu [SECONDS] [LABEL]      default 20 s
+set -uo pipefail
+
+secs=${1:-20}
+label=${2:-}
+qs=(qs ipc -p "${OMARCHY_PATH:-/usr/share/omarchy}/shell" call omarchy-buddy.test)
+mode() { "${qs[@]}" state | jq -r '.mode + (if .paused then " pausiert" else "" end)'; }
+ticks() { local t=0 p; for p in $(pgrep -x "$1"); do t=$((t + $(awk '{print $14 + $15}' "/proc/$p/stat"))); done; echo "$t"; }
+
+f0=$("${qs[@]}" frames) || { echo "Die Insel antwortet nicht (frames)." >&2; exit 2; }
+m0=$(mode)
+q0=$(ticks quickshell) h0=$(ticks Hyprland)
+gpu=$(mktemp)
+if command -v nvidia-smi >/dev/null; then
+  nvidia-smi --query-gpu=utilization.gpu,power.draw --format=csv,noheader,nounits -lms 500 >"$gpu" &
+  smi=$!
+fi
+sleep "$secs"
+[[ -n ${smi-} ]] && kill "$smi" 2>/dev/null
+f1=$("${qs[@]}" frames)
+q1=$(ticks quickshell) h1=$(ticks Hyprland)
+hz=$(getconf CLK_TCK)
+
+awk -v l="$label" -v s="$secs" -v f=$((f1 - f0)) -v q=$((q1 - q0)) -v h=$((h1 - h0)) -v hz="$hz" \
+    -v m="$m0→$(mode)" -F', ' '
+  { u += $1; w += $2; n++ }
+  END {
+    printf "%s: %.1f Bilder/s, quickshell %.1f %% CPU, Hyprland %.1f %% CPU", l, f / s, 100 * q / hz / s, 100 * h / hz / s
+    if (n) printf ", GPU %.1f %%, %.1f W", u / n, w / n
+    printf " (%d s, Ansicht %s)\n", s, m
+  }' "$gpu"
+rm -f "$gpu"

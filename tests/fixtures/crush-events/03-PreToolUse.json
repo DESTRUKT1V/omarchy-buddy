@@ -1,0 +1,12 @@
+{
+  "event": "PreToolUse",
+  "hook_event_name": "PreToolUse",
+  "session_id": "213f22c0-a048-488d-871d-1756449d7f4c",
+  "cwd": "/home/user/projekt",
+  "tool_name": "bash",
+  "tool_input": {
+    "command": "rm -rf neu.txt",
+    "description": "Test"
+  },
+  "tool_use_id": "call_1"
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+# Starts the hook in lib/hook.py (what it does and how to call it: there).
+# Every agent's settings call this name; the code lives in lib/ because
+# Python compiles a script on every start but keeps a module compiled.
+import os
+import sys
+
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+    import hook
+except Exception as e:  # never break Claude, not even without lib/
+    print(f"omarchy-buddy-hook: {e}", file=sys.stderr)
+    sys.exit(0)
+hook.run()

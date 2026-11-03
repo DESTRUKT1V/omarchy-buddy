@@ -1,0 +1,550 @@
+#!/usr/bin/env python3
+# Collects news for the omarchy-buddy island and hands new items to
+# omarchy-buddy-say. Run by omarchy-buddy-feed.timer every 15 minutes; the island's
+# "jetzt prüfen" runs it with --now.
+#
+#   System  pending updates every 12 h, one item for all package managers
+#           (lib/updates.py; a click runs omarchy-buddy-update), full disks,
+#           failed units, crashes (coredumpctl; a click runs omarchy-buddy-crash)
+#   Coding  new Claude Code version with the top changelog lines, new Omarchy
+#           releases, Orca releases (only with Orca installed)
+#   Kuma    monitors down and back up on an Uptime Kuma status page (only with
+#           "feed": {"kuma": "https://HOST/status/SLUG"}), every run
+#   GitHub  review requests, mentions, failed workflow runs and replies in
+#           own issues/PRs (gh api notifications, only with gh signed in; "feed":
+#           {"github": false} switches it off), every run
+#   Rückfall nobody holds the notification bus while the shell runs →
+#           omarchy-buddy-check --rueckfall brings Omarchy's notifications back
+#   Morning a greeting with the day's summary on the first run after 7:00
+#
+# What was already reported is remembered in ~/.local/state/omarchy-buddy/feed.json;
+# the very first run only records the current state. Network checks run at
+# most hourly unless --now is given. --test-kuma URL only says whether URL is
+# a status page that answers ("ok", "unreachable", "invalid"; the settings page).
+
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+NET_EVERY = 3600
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+import buddy  # noqa: E402
+import updates  # noqa: E402
+from buddy import say, private_dir, private_open  # noqa: E402
+from texts import t, first_name  # noqa: E402
+
+STATE_DIR = buddy.STATE_DIR
+STATE = os.path.join(STATE_DIR, "feed.json")
+UPDATES_EVERY = 12 * 3600
+UPDATES_KEY = "updates"
+# omarchy-buddy-update touches it when it starts: if a restart cuts it off
+# after `omarchy update`, the next run still checks again.
+UPDATES_RAN = os.path.join(STATE_DIR, "updates-ran")
+
+
+def run(cmd, timeout=30):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.SubprocessError):
+        return -1, ""
+
+
+def fetch(url, timeout=10):
+    import urllib.request  # only the hourly network checks need it (a fifth of a normal run)
+    req = urllib.request.Request(url, headers={"User-Agent": "omarchy-buddy-feed"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def version_key(v):
+    return [int(x) for x in re.findall(r"\d+", v)]
+
+
+def shorten(text, n=110):
+    text = re.sub(r"`([^`]*)`", r"\1", " ".join(text.split()))
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # markdown links: their text
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def check_fallback(st, quiet):
+    """The island did not load or crashed: Omarchy's notifications back
+    (omarchy-buddy-check, which also restarts the shell)."""
+    run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "omarchy-buddy-check"), "--rueckfall"], timeout=600)
+
+
+def feed_sources():
+    """What config.json switches on beyond the general checks: "feed":
+    {"kuma": "STATUS-PAGE-URL", "github": false}. Kuma is off unless set,
+    GitHub is on unless false."""
+    feed = buddy.config().get("feed")
+    feed = feed if isinstance(feed, dict) else {}
+    kuma = feed.get("kuma")
+    return {"kuma": kuma.strip() if isinstance(kuma, str) else "", "github": feed.get("github") is not False}
+
+
+# ------------------------------------------------------------------ checks
+
+def check_updates(st, quiet):
+    """Every 12 hours (and with --now) one news item for all pending updates
+    (lib/updates.py), replaced when the picture changes and gone once
+    everything is current. A source that fails (offline, timeout) keeps
+    what it said last time; when all fail, the next run tries again."""
+    counts = dict(st.get("update_counts", {}))
+    omarchy = st.get("omarchy_ready", False)
+    worked = False
+    for name, (program, cmd, _) in updates.SOURCES.items():
+        if not shutil.which(program) or (name == "paru" and shutil.which("yay")):
+            counts.pop(name, None)
+            continue
+        code, out = run(cmd, timeout=90)
+        n = updates.count(name, code, out)
+        if n is None:
+            print(f"omarchy-buddy-feed: {program}: exit {code}", file=sys.stderr)
+            continue
+        worked = True
+        counts[name] = n
+        if name == "pacman":
+            omarchy = updates.omarchy_ready(code, out)
+    if not worked:
+        return
+    st["updates_checked"] = time.time()
+    st["update_counts"], st["omarchy_ready"] = counts, omarchy
+    parts = updates.summary(counts, omarchy)
+    sig = json.dumps(parts)
+    if sig == st.get("update_sig"):
+        return
+    st["update_sig"] = sig
+    buddy.unsay(UPDATES_KEY)
+    if parts:
+        say(update_title(parts), t("feed.updates.body"),
+            source="system", key=UPDATES_KEY, action="updates")
+
+
+def update_title(parts):
+    """"Updates: Omarchy, 12 Pakete, 1 mise-Tool" from updates.summary()."""
+    return t("feed.updates", parts=", ".join(t("updates." + g + (".one" if n == 1 else ""), n=n) for g, n in parts))
+
+
+def mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
+def update_news():
+    """"updateNews" in config.json, on unless false."""
+    return buddy.config().get("updateNews") is not False
+
+
+def check_omarchy_installed(st, quiet):
+    _, out = run(["omarchy-version"])
+    v = out.strip()
+    if v and st.get("omarchy_version") not in (None, v) and not quiet:
+        say(t("feed.omarchyInstalled", version=v), t("feed.omarchyInstalled.body", old=st["omarchy_version"]), source="system", level="good")
+    if v:
+        st["omarchy_version"] = v
+
+
+def check_disks(st, quiet):
+    warned = st.setdefault("disk_warned", {})
+    for mount in ("/", "/home"):
+        try:
+            u = shutil.disk_usage(mount)
+        except OSError:
+            continue
+        pct = round(u.used * 100 / u.total)
+        level = 95 if pct >= 95 else 85 if pct >= 85 else 0
+        if level and warned.get(mount, 0) < level and not quiet:
+            say(t("feed.disk", mount=mount, percent=pct), t("feed.disk.body", gb=u.free // 2**30), source="system",
+                level="error" if level == 95 else "warn")
+        warned[mount] = level
+
+
+def check_failed_units(st, quiet):
+    failed = set()
+    for scope in ([], ["--user"]):
+        _, out = run(["systemctl", *scope, "--failed", "--no-legend", "--plain"])
+        # run-*.service are transient units (systemd-run), not worth a report
+        failed |= {l.split()[0] for l in out.splitlines() if l.strip() and not l.startswith("run-")}
+    new = failed - set(st.get("failed_units", []))
+    if new and not quiet:
+        say(t("feed.failed", units=", ".join(sorted(new))), "Details: systemctl status " + sorted(new)[0], source="system", level="error")
+    st["failed_units"] = sorted(failed)
+
+
+OMARCHY_TOGGLES = os.path.join(buddy.STATE_HOME, "omarchy/toggles")
+
+
+def crash_name(exe):
+    """A crashed program's name as Omarchy's crash watcher gives it: the executable's."""
+    name = os.path.basename(str(exe or ""))
+    return name if name not in ("", ".", "..") else "unknown"
+
+
+def crash_title(names):
+    """"Abgestürzt: mpv" or "3 Abstürze: mpv (2×), foot" from the names, oldest first."""
+    if len(names) == 1:
+        return t("feed.crash", name=names[0])
+    counts = {n: names.count(n) for n in names}
+    parts = [n + (f" ({c}×)" if c > 1 and len(counts) > 1 else "") for n, c in counts.items()]
+    return t("feed.crashes", n=len(names), names=", ".join(parts))
+
+
+def omarchy_toasted(dump, watch_since, agent):
+    """Whether Omarchy 4.0.6+ popped up its own "Process crashed" for this core
+    dump: omarchy-crash-watch ran since before it and a default agent is set
+    (without one Omarchy stays quiet). Its toast leaves nothing in the island's
+    history, so the island keeps the crash, but without a second pop-up."""
+    return bool(agent) and watch_since is not None and dump.get("time", 0) / 1e6 >= watch_since
+
+
+def crash_watch_since():
+    """Since when omarchy-crash-watch runs (unix time), None if it does not."""
+    _, out = run(["systemctl", "--user", "show", "omarchy-crash-watch", "-p", "ActiveState",
+                  "-p", "ActiveEnterTimestamp", "--timestamp=unix"])
+    props = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    m = re.fullmatch(r"@(\d+)", props.get("ActiveEnterTimestamp", ""))
+    return int(m.group(1)) if props.get("ActiveState") == "active" and m else None
+
+
+def crash_agent():
+    """Omarchy's default agent if omarchy-agent-crash can hand it a crash, else ""."""
+    if not shutil.which("omarchy-agent-crash"):
+        return ""
+    _, out = run(["omarchy-default-agent"])
+    return out.strip()
+
+
+def check_crashes(st, quiet):
+    """Core dumps of the user's own programs since the last run (coredumpctl,
+    read only), one item per run; a click investigates the newest. Omarchy's
+    switches count: crash capture off says nothing, a muted program is left out."""
+    last = st.get("crash_last")
+    if not last:
+        st["crash_last"] = int(time.time() * 1e6)  # first run: from now on
+        return
+    code, out = run(["coredumpctl", "--json=short", "--no-pager", f"--since=@{int(last // 1e6)}"])
+    if code != 0 or not out.strip():
+        return  # 1: no core dumps; -1: no coredumpctl
+    dumps = sorted((d for d in json.loads(out) if isinstance(d, dict) and d.get("uid") == os.getuid()
+                    and isinstance(d.get("time"), int) and d["time"] > last), key=lambda d: d["time"])
+    if not dumps:
+        return
+    st["crash_last"] = dumps[-1]["time"]
+    if quiet or os.path.exists(os.path.join(OMARCHY_TOGGLES, "crash-capture-off")):
+        return
+    dumps = [d for d in dumps if not os.path.isfile(os.path.join(OMARCHY_TOGGLES, "crash-ignore", crash_name(d.get("exe"))))]
+    if not dumps:
+        return
+    agent, since = crash_agent(), crash_watch_since()
+    many = ".many" if len(dumps) > 1 else ""
+    say(crash_title([crash_name(d.get("exe")) for d in dumps]),
+        t(("feed.crash.agent" if agent else "feed.crash.details") + many), source="system", level="error",
+        action=f"crash:{dumps[-1].get('pid')}", quiet=all(omarchy_toasted(d, since, agent) for d in dumps))
+
+
+def check_claude_code(st, quiet):
+    text = fetch("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md")
+    m = re.search(r"^## (\S+)\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    if not m:
+        return
+    latest, notes = m.group(1), m.group(2)
+    _, out = run(["claude", "--version"])
+    installed = out.split()[0] if out.strip() else "?"
+    if st.get("claude_latest") != latest and not quiet:
+        bullets = [shorten(b[2:], 90) for b in notes.splitlines() if b.startswith("- ")]
+        added = [b for b in bullets if b.startswith("Added")][:2] or bullets[:2]
+        body = t("feed.claude.body", items="; ".join(re.sub(r"^Added (an? |the )?", "", b) for b in added))
+        if installed != latest:
+            body += "  " + t("feed.installed", version=installed)
+        say(t("feed.claude", version=latest), body, source="coding", level="info",
+            url="https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")
+    st["claude_latest"] = latest
+
+
+def check_release(st, quiet, repo, name, installed=None):
+    data = json.loads(fetch(f"https://api.github.com/repos/{repo}/releases/latest"))
+    tag = str(data.get("tag_name", "")).lstrip("v")
+    key = "release_" + repo
+    if tag and st.get(key) != tag and not quiet and not (installed and version_key(installed) >= version_key(tag)):
+        first = next((l for l in str(data.get("body") or "").splitlines() if l.strip().startswith(("-", "*"))), "")
+        body = shorten(first.strip("-* "), 140) if first else ""
+        if installed:
+            body = (body + "  " if body else "") + t("feed.installed", version=installed)
+        say(t("feed.release", name=name, version=tag), body, source="coding", url=data.get("html_url", ""))
+    if tag:
+        st[key] = tag
+
+
+def orca_version():
+    try:
+        with open(os.path.join(buddy.HOME, ".local/opt/orca/resources/app.asar"), "rb") as f:
+            m = re.search(rb'"name":\s*"orca"[^}]{0,400}?"version":\s*"([\d.]+)"', f.read(4_000_000))
+            return m.group(1).decode() if m else None
+    except OSError:
+        return None
+
+
+KUMA_SETTLE = 600  # back up only after 10 min without a down beat: a flapping monitor is one outage
+
+
+def kuma_api(url):
+    """The two public JSON endpoints behind a status page URL
+    (https://HOST/status/SLUG), None if the URL is no status page."""
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    m = re.match(r"(.*?)/status/([^/]+)/?$", u.path)
+    if u.scheme not in ("http", "https") or not u.netloc or not m:
+        return None
+    base = f"{u.scheme}://{u.netloc}{m.group(1)}/api/status-page/"
+    return base + m.group(2), base + "heartbeat/" + m.group(2)
+
+
+def kuma_read(api):
+    """The monitors' names and heartbeats from the two endpoints; raises
+    OSError, ValueError … when the page does not answer as a status page."""
+    page, beats = json.loads(fetch(api[0])), json.loads(fetch(api[1]))["heartbeatList"]
+    return {str(m["id"]): str(m["name"]) for g in page["publicGroupList"] for m in g["monitorList"]}, beats
+
+
+KUMA_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError)
+
+
+def test_kuma(url):
+    api = kuma_api(url.strip())
+    if not api:
+        return "invalid"
+    try:
+        kuma_read(api)
+    except KUMA_ERRORS:
+        return "unreachable"
+    return "ok"
+
+
+def kuma_time(text):
+    """A heartbeat's time ("2026-10-30 12:00:00.123", UTC) as a timestamp."""
+    from datetime import timezone
+    return datetime.fromisoformat(str(text).replace(" ", "T").replace("Z", "")).replace(tzinfo=timezone.utc).timestamp()
+
+
+def kuma_state(beats):
+    """("down", since the first down beat) or ("up", since the first up beat
+    after the last down one) from a monitor's heartbeats, oldest first;
+    None while it is pending or in maintenance (keeps what was said)."""
+    if not beats:
+        return None
+    last = beats[-1].get("status")
+    if last not in (0, 1):
+        return None
+    since = beats[-1]
+    for b in reversed(beats):
+        if b.get("status") == 1 - last:
+            break
+        if b.get("status") == last:
+            since = b
+    return ("down" if last == 0 else "up"), kuma_time(since.get("time"))
+
+
+def since_text(when):
+    """14:05 today, otherwise with the date."""
+    same_day = time.localtime(when)[:3] == time.localtime()[:3]
+    return time.strftime("%H:%M" if same_day else t("date"), time.localtime(when))
+
+
+def check_kuma(st, quiet, url):
+    """A monitor that goes down is reported once (several in one item), and
+    once more when it has been up for KUMA_SETTLE; down again before that
+    says nothing. The status page itself after two failed tries."""
+    api = kuma_api(url)
+    if not api:
+        print(f"omarchy-buddy-feed: kuma: no status page URL: {url}", file=sys.stderr)
+        return
+    if st.get("kuma_url") != url:
+        st.update(kuma_url=url, kuma_down={}, kuma_fail=0)
+    try:
+        names, beats = kuma_read(api)
+        states = {str(k): kuma_state(v) for k, v in beats.items()}
+    except KUMA_ERRORS:
+        st["kuma_fail"] = st.get("kuma_fail", 0) + 1
+        if st["kuma_fail"] == 2 and not quiet:
+            say(t("feed.kuma.unreachable"), t("feed.kuma.unreachable.body", url=url), source="kuma", level="warn", url=url)
+        return
+    if st.get("kuma_fail", 0) >= 2 and not quiet:
+        say(t("feed.kuma.reachable"), "", source="kuma", level="good", url=url)
+    st["kuma_fail"] = 0
+    down = {k: v for k, v in st.get("kuma_down", {}).items() if k in states}  # gone from the page: forgotten
+    new, back = [], []
+    for k, s in states.items():
+        if s and s[0] == "down" and k not in down:
+            down[k] = s[1]
+            new.append(k)
+        elif s and s[0] == "up" and k in down and time.time() - s[1] >= KUMA_SETTLE:
+            del down[k]
+            back.append(k)
+    st["kuma_down"] = down
+    if quiet:
+        return
+    name = lambda k: names.get(k, t("feed.kuma.monitor", id=k))
+    if len(new) == 1:
+        say(t("feed.kuma.down", name=name(new[0])), t("feed.kuma.down.body", since=since_text(down[new[0]])),
+            source="kuma", level="warn", url=url)
+    elif new:
+        say(t("feed.kuma.downMany", n=len(new)),
+            ", ".join(t("feed.kuma.downItem", name=name(k), since=since_text(down[k])) for k in new),
+            source="kuma", level="warn", url=url)
+    if back:
+        say(t("feed.kuma.up" if len(back) == 1 else "feed.kuma.upMany", names=", ".join(name(k) for k in back)), "",
+            source="kuma", level="good", url=url)
+
+
+# What a GitHub notification's reason means here; the rest (subscribed,
+# comment, assign, state_change …) stays on GitHub.
+GITHUB_KINDS = {"review_requested": "review", "mention": "mention", "team_mention": "mention",
+                "ci_activity": "ci", "author": "reply"}
+
+
+def github_url(note):
+    """The web page of a notification's thread: the API address of the issue,
+    PR or commit as a github.com one; the repo's Actions or the repo itself
+    when there is none (workflow runs, releases, discussions)."""
+    repo = str((note.get("repository") or {}).get("html_url") or "")
+    api = str((note.get("subject") or {}).get("url") or "")
+    m = re.match(r"https://api\.github\.com/repos/([\w.-]+/[\w.-]+)/(issues|pulls|commits)/(\w+)$", api)
+    if m:
+        page = {"pulls": "pull", "commits": "commit"}.get(m.group(2), m.group(2))
+        return f"https://github.com/{m.group(1)}/{page}/{m.group(3)}"
+    if not re.match(r"https://github\.com/[\w.-]+/[\w.-]+$", repo):
+        return "https://github.com/notifications"
+    return repo + "/actions" if note.get("reason") == "ci_activity" else repo
+
+
+def github_items(notes):
+    """The notifications worth an item (gh api notifications, unread ones):
+    review requests, mentions, failed workflow runs the user started and new
+    activity in their own issues and PRs, as {id, stamp, kind, ref, title, url}."""
+    items = []
+    for n in notes if isinstance(notes, list) else []:
+        if not isinstance(n, dict):
+            continue
+        kind, subject = GITHUB_KINDS.get(n.get("reason")), n.get("subject") or {}
+        title = str(subject.get("title") or "")
+        if not kind or (kind == "ci" and "fail" not in title.lower()):  # notify-all setting: successful runs too
+            continue
+        ref = str((n.get("repository") or {}).get("full_name") or "")
+        num = re.search(r"/(?:issues|pulls)/(\d+)$", str(subject.get("url") or ""))
+        items.append({"id": str(n.get("id")), "stamp": str(n.get("updated_at") or ""), "kind": kind,
+                      "ref": ref + ("#" + num.group(1) if num else ""), "title": title, "url": github_url(n)})
+    return items
+
+
+def check_github(st, quiet):
+    """Only with gh installed and signed in (otherwise gh fails and nothing
+    shows). Each thread once per update; several new ones in one item. The
+    first run with gh signed in only learns."""
+    if not shutil.which("gh"):
+        return
+    code, out = run(["gh", "api", "notifications"], timeout=30)
+    if code != 0:  # not signed in, offline, rate limit: silent
+        return
+    try:
+        items = github_items(json.loads(out))
+    except ValueError:
+        return
+    learning = "github_seen" not in st
+    seen = st.setdefault("github_seen", {})
+    new = [i for i in items if seen.get(i["id"]) != i["stamp"]]
+    for i in items:
+        seen[i["id"]] = i["stamp"]
+    st["github_seen"] = dict(sorted(seen.items(), key=lambda kv: kv[1])[-300:])  # newest 300 threads
+    if quiet or learning or not new:
+        return
+    level = "warn" if any(i["kind"] == "ci" for i in new) else "info"
+    if len(new) == 1:
+        i = new[0]
+        say(t("feed.github." + i["kind"], ref=i["ref"]), shorten(i["title"], 120), source="github", level=level, url=i["url"])
+    else:
+        say(t("feed.github.many", n=len(new)),
+            ", ".join(t("feed.github.short." + i["kind"]) + " " + i["ref"] for i in new[:6]) + (" …" if len(new) > 6 else ""),
+            source="github", level=level, url="https://github.com/notifications")
+
+
+def morning(st):
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    if now.hour < 7 or st.get("morning") == today:
+        return
+    st["morning"] = today
+    found = updates.summary(st.get("update_counts", {}), st.get("omarchy_ready", False)) if update_news() else []
+    say(t("feed.morning" if now.hour < 12 else "feed.morning.later", name=first_name()),
+        update_title(found) if found else t("feed.morning.current"), source="buddy", level="good")
+
+
+# ------------------------------------------------------------------- main
+
+def main():
+    if "--test-kuma" in sys.argv[1:2]:
+        print(test_kuma(sys.argv[2] if len(sys.argv) > 2 else ""))
+        return
+    force = "--now" in sys.argv
+    private_dir(STATE_DIR)
+    with private_open(os.path.join(STATE_DIR, "feed.lock")) as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return  # another run is busy
+        try:
+            with open(STATE) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        quiet = not st  # first run: only learn the current state
+
+        feed = feed_sources()
+        checks = [check_fallback, check_omarchy_installed, check_disks, check_failed_units, check_crashes]
+        if feed["kuma"]:
+            checks.append(lambda s, q: check_kuma(s, q, feed["kuma"]))
+        else:
+            st.pop("kuma_url", None)  # switched on again: starts fresh
+        if feed["github"]:
+            checks.append(check_github)
+        else:
+            st.pop("github_seen", None)  # switched on again: learns first, no flood
+        if not update_news():
+            buddy.unsay(UPDATES_KEY)  # switched off in the settings
+            st.pop("update_sig", None)
+            st.pop("updates_checked", None)  # switched on again: check at once
+        elif force or quiet or time.time() - st.get("updates_checked", 0) >= UPDATES_EVERY \
+                or mtime(UPDATES_RAN) > st.get("updates_checked", 0):
+            checks.append(check_updates)
+        net = force or quiet or time.time() - st.get("net_checked", 0) >= NET_EVERY
+        if net:
+            checks += [check_claude_code,
+                       lambda s, q: check_release(s, q, "basecamp/omarchy", "Omarchy", s.get("omarchy_version", "").split("-")[0] or None)]
+            orca = orca_version()
+            if orca or shutil.which("orca-ide"):
+                checks.append(lambda s, q: check_release(s, q, "stablyai/orca", "Orca", orca))
+        for check in checks:
+            try:
+                check(st, quiet)
+            except Exception as e:  # one broken source must not stop the others
+                print(f"omarchy-buddy-feed: {getattr(check, '__name__', 'check')}: {e}", file=sys.stderr)
+        if net:
+            st["net_checked"] = time.time()
+        if not quiet:
+            morning(st)
+        else:
+            st["morning"] = datetime.now().strftime("%Y-%m-%d") if datetime.now().hour >= 7 else ""
+        buddy.save_json(STATE, st, ensure_ascii=False, indent=1)
+
+
+if __name__ == "__main__":
+    main()

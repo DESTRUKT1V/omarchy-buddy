@@ -1,0 +1,1 @@
+grok 1.0.70 (ruft die Hooks aus ~/.claude/settings.json; eigener Ersatz-Server statt xAI, nicht angemeldet; Notification aus einem zweiten, interaktiven Lauf; GROK_HOOK_EVENT in der Umgebung)

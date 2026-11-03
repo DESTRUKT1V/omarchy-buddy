@@ -1,0 +1,1377 @@
+#!/usr/bin/env python3
+# Sets Omarchy-Buddy up after `omarchy plugin add` (or again after an
+# update; it only changes what is not set yet), and with --remove takes it
+# all back out.
+#
+#   omarchy-buddy-setup               set up; in a terminal it first lists the
+#                                     files it changes and asks once (#208;
+#                                     No: nothing changes, exit 1)
+#   omarchy-buddy-setup --yes         set up without asking (install.sh)
+#   omarchy-buddy-setup --remove      Omarchy's notifications back, hooks out
+#   omarchy-buddy-setup --uninstall   --remove, then `omarchy plugin remove`
+#                                     (the button in the island's settings)
+#   omarchy-buddy-setup --commands on|off   only the line for long terminal
+#                                     commands (the island's switch; exit 2:
+#                                     chezmoi has the file, add it there)
+#   omarchy-buddy-setup --agents      the agents that are installed (their
+#                                     folder is there, Claude's too), for the island
+#   omarchy-buddy-setup --agent NAME on|off   one agent's hooks or plugin in
+#                                     or out (the island's switch; it writes
+#                                     agents.NAME to config.json; exit 2: a
+#                                     file of the agent's stayed as it was)
+#   omarchy-buddy-setup --weather on|off   Omarchy's weather out of the bar
+#                                     or back where it stood (the island's
+#                                     switch, it writes config.json "weather")
+#   omarchy-buddy-setup --bar [on|off]   "Leiste ordnen": the clock, O-Morchy,
+#                                     Omarchy's indicators side by side, or
+#                                     back; prints offer, undo or nothing
+#   … --files-only                    only files: no systemctl, no shell
+#                                     restart (tests in a sandbox HOME)
+#
+# Setting up:
+#   - the scripts in ~/.local/bin and the Omarchy post-update and battery-low hooks
+#   - ~/.claude/settings.json: the hook for every event and
+#     omarchy-buddy-statusline in front of the status line (the old one is
+#     kept in ~/.local/state/omarchy-buddy/statusline.json and keeps running).
+#     Both commands do nothing (the status line: run the old one) once the
+#     script is gone, e.g. after `omarchy plugin remove` without --remove.
+#   - ~/.codex/hooks.json: the hook (with --codex) for Codex's events, and
+#     in ~/.codex/config.toml the hashes that say the user trusts them
+#     ([hooks.state."…"], also for Omarchy 4.5's further Codex accounts,
+#     which share both files), so Codex does not ask about them at start.
+#   - the hook (with --agent NAME) for Gemini CLI (~/.gemini/settings.json),
+#     Crush (~/.config/crush/crush.json) and GitHub Copilot CLI (its own
+#     ~/.copilot/hooks/omarchy-buddy.json), and Omarchy 4.5's Antigravity
+#     (~/.gemini/config/hooks.json), Qwen Code, Kimi, Devin, Command Code and
+#     Kiro, each only where its folder is, see AGENT_HOOKS. Grok and Cursor
+#     run the Claude hooks above as they are.
+#   - opencode, Pi and Oh My Pi: our plugin file in their plugin folder
+#     (~/.config/opencode/plugins, ~/.pi/agent/extensions,
+#     ~/.omp/agent/extensions), see AGENT_PLUGINS
+#   - an agent off in config.json ("agents": {"NAME": false}) gets none
+#     of the above, what is there of ours comes out; Claude is always on
+#   - ~/.config/omarchy/shell.json: Omarchy's own notifications plugin off
+#     (there can be only one notification server), its Dnd indicator out of
+#     the bar (the island has the Ruhemodus), this plugin on: its bar widget
+#     right after Omarchy's clock (#182; where the user moved it, it stays);
+#     with "weather" on in config.json Omarchy's weather out of the bar (#184)
+#   - the systemd user timer for omarchy-buddy-feed
+#   - while "longCommands" is on in config.json: a marked line in ~/.bashrc
+#     and ~/.zshrc that loads lib/long-commands.sh (not in a file chezmoi
+#     manages: the setup names the line instead)
+# Every file is backed up before it changes (*.bak-omarchy-buddy-TIME, the
+# newest 3 per file stay); what shell.json looked like is kept in setup.json,
+# so --remove puts back exactly that and leaves everything else the user
+# changed since.
+
+import contextlib
+import glob
+import hashlib
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import buddy  # noqa: E402
+from texts import t  # noqa: E402
+
+HOME = os.path.expanduser("~")
+BIN = os.path.join(HOME, ".local/bin")
+OMARCHY = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
+OMARCHY_CONFIG = os.path.join(buddy.CONFIG_HOME, "omarchy")
+SHELL_JSON = os.path.join(OMARCHY_CONFIG, "shell.json")
+HOOK_DIR = os.path.join(OMARCHY_CONFIG, "hooks/post-update.d")
+BATTERY_HOOK = os.path.join(OMARCHY_CONFIG, "hooks/battery-low.d/omarchy-buddy")
+UNIT_DIR = os.path.join(buddy.CONFIG_HOME, "systemd/user")
+UNITS = ("omarchy-buddy-feed.service", "omarchy-buddy-feed.timer")
+SETTINGS = os.path.join(HOME, ".claude/settings.json")
+CODEX_DIR = os.path.join(HOME, ".codex")
+CODEX_HOOKS = os.path.join(CODEX_DIR, "hooks.json")
+CODEX_CONFIG = os.path.join(CODEX_DIR, "config.toml")
+CODEX_ACCOUNTS = os.path.join(buddy.STATE_HOME, "omarchy/agents/accounts/codex.json")
+RECORD = os.path.join(buddy.STATE_DIR, "setup.json")
+INNER = os.path.join(buddy.STATE_DIR, "statusline.json")
+PLUGIN_ID = "io.github.destrukt1v.omarchy-buddy"
+NAME = "omarchy-buddy"  # our own name: scripts, folders, Antigravity's group
+OLD_ID = NAME  # the plugin's id before 1.2.0 (#209)
+
+SCRIPTS = ("omarchy-buddy-hook", "omarchy-buddy-setup", "omarchy-buddy-statusline",
+           "omarchy-buddy-say", "omarchy-buddy-feed", "omarchy-buddy-check")
+
+HOOK = os.path.join(BIN, "omarchy-buddy-hook")
+STATUSLINE = os.path.join(BIN, "omarchy-buddy-statusline")
+OURS = (HOOK,)
+OUR_STATUSLINES = (STATUSLINE,)
+
+# Status events run async so Claude never waits on the island; PermissionRequest
+# has to be synchronous because its output is the decision (the hook waits up
+# to 300 s for questions and plans).
+EVENTS = {
+    "SessionStart": {"async": True},
+    "UserPromptSubmit": {"async": True},
+    "PreToolUse": {"async": True},
+    "PostToolUse": {"async": True},
+    "PostToolUseFailure": {"async": True},
+    "Notification": {"async": True},
+    "Stop": {"async": True},
+    "StopFailure": {"async": True},
+    "PermissionDenied": {"async": True},
+    "SessionEnd": {"timeout": 5},
+    "PermissionRequest": {"timeout": 310},
+}
+# Codex has no Notification, StopFailure or PermissionDenied, but Interrupt
+# (Escape); it runs SessionEnd and Interrupt for 3 s at most.
+CODEX_EVENTS = {
+    "SessionStart": {"async": True},
+    "UserPromptSubmit": {"async": True},
+    "PreToolUse": {"async": True},
+    "PostToolUse": {"async": True},
+    "Stop": {"async": True},
+    "Interrupt": {"async": True},
+    "SessionEnd": {"timeout": 3},
+    "PermissionRequest": {"timeout": 310},
+}
+# Further agents: name, folder, file, events and the file's form: "groups"
+# (Claude's: {"hooks": {event: [{"hooks": [{"type": "command", "command": …}]}]}}),
+# "flat" (Crush: {"hooks": {event: [{"command": …}]}}) or "own" (Copilot
+# reads every file in its hooks folder; this one is ours alone). The hook
+# goes on in the background for them (omarchy-buddy-hook OTHER_AGENTS), so
+# none of them waits on the island. Gemini's timeout is in ms. Crush does
+# not start with an event it does not know.
+AGENT_HOOKS = {
+    "gemini": ("Gemini", os.path.join(HOME, ".gemini"), "settings.json",
+               {e: {"timeout": 5000} for e in ("SessionStart", "BeforeAgent", "BeforeTool", "AfterTool",
+                                               "AfterAgent", "Notification", "SessionEnd")}, "groups"),
+    "crush": ("Crush", os.path.join(buddy.CONFIG_HOME, "crush"), "crush.json",
+              {e: {"timeout": 5} for e in ("SessionStart", "TurnStart", "PreToolUse", "PostToolUse",
+                                           "PostToolUseFailure", "PermissionRequest", "PermissionResult",
+                                           "TurnEnd", "StopFailure", "Interrupt", "SessionEnd")}, "flat"),
+    "copilot": ("Copilot", os.path.join(HOME, ".copilot"), "hooks/omarchy-buddy.json",
+                {e: {"timeoutSec": 5} for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                                "PostToolUseFailure", "Notification", "Stop", "SessionEnd")}, "own"),
+    # Omarchy 4.5's agents (#145), from their docs and Orca's hook setup.
+    # Antigravity: our own named group in its file ("named", the event's
+    # name in the command); Kimi: a marked block of [[hooks]] ("toml"; no
+    # SessionStart: it comes mid-way through the first prompt); Kiro: an own
+    # file in its V3 form ("kiro"). Timeouts in seconds.
+    "agy": ("Antigravity", os.path.join(HOME, ".gemini/config"), "hooks.json",
+            {e: {"timeout": 5} for e in ("SessionStart", "PreInvocation", "PreToolUse", "PostToolUse", "Stop")}, "named"),
+    "qwen": ("Qwen Code", os.path.join(HOME, ".qwen"), "settings.json",
+             {e: {"timeout": 5} for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                          "PostToolUseFailure", "Notification", "Stop", "StopFailure", "SessionEnd")}, "groups"),
+    "kimi": ("Kimi", os.environ.get("KIMI_CODE_HOME") or os.path.join(HOME, ".kimi-code"), "config.toml",
+             {e: {"timeout": 5} for e in ("UserPromptSubmit", "TurnStarted", "PreToolUse", "PostToolUse",
+                                          "PostToolUseFailure", "PermissionRequest", "PermissionResult", "Stop",
+                                          "StopFailure", "Interrupt", "SessionEnd")}, "toml"),
+    "devin": ("Devin", os.path.join(buddy.CONFIG_HOME, "devin"), "config.json",
+              {e: {"timeout": 5} for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                           "PermissionRequest", "Stop", "SessionEnd")}, "groups"),
+    "commandcode": ("Command Code", os.path.join(HOME, ".commandcode"), "settings.json",
+                    {e: {"timeout": 5} for e in ("SessionStart", "PreToolUse", "PostToolUse", "Stop")}, "groups"),
+    "kiro-cli": ("Kiro", os.path.join(HOME, ".kiro"), "hooks/omarchy-buddy.json",
+                 {e: {"timeout": 5} for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                              "Stop", "SessionEnd")}, "kiro"),
+    # Muse Code (#144): user hooks in its settings.json, which Orca writes
+    # too (its managed_hooks_path); Muse runs both. ToolUseStart only async.
+    "muse": ("Muse", os.path.join(buddy.CONFIG_HOME, "muse"), "settings.json",
+             {**{e: {"timeout": 5} for e in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                                             "PostToolUseFailure", "Notification", "Stop", "StopFailure",
+                                             "SessionEnd")}, "ToolUseStart": {"timeout": 5, "async": True}}, "groups"),
+}
+TOML_START = "# >>> omarchy-buddy: written by omarchy-buddy-setup, removed by omarchy-buddy-setup --remove >>>"
+TOML_END = "# <<< omarchy-buddy <<<"
+# Plugin agents (#142): name, folder, our file in it, and the plugin in
+# agent-plugins/ it loads. The file is a stub that imports that plugin from
+# this checkout, so a plugin update needs no new setup and a plugin removed
+# without --remove only leaves an import that fails quietly. Plugins of
+# others in the folder (Orca's, herdr's) stay as they are.
+AGENT_PLUGINS = {
+    "opencode": ("opencode", os.path.join(buddy.CONFIG_HOME, "opencode"), "plugins/omarchy-buddy.js", "opencode.js"),
+    "pi-agent": ("Pi", os.path.join(HOME, ".pi/agent"), "extensions/omarchy-buddy.js", "pi.js"),
+    "omp": ("Oh My Pi", os.path.join(HOME, ".omp"), "agent/extensions/omarchy-buddy.js", "pi.js"),
+}
+# Grok and Cursor run the Claude hooks as they are (#141): nothing to set
+# up, switched off the hook drops their events.
+CLAUDE_RIDERS = {"grok": ("Grok", os.path.join(HOME, ".grok")),
+                 "cursor-agent": ("Cursor", os.path.join(HOME, ".cursor"))}
+PLUGIN_MARK = "// Omarchy-Buddy: written by omarchy-buddy-setup, removed by omarchy-buddy-setup --remove.\n"
+# Omarchy's indicator lists so far. A list that is one of them minus Dnd came
+# from the setup and follows Omarchy's current one; tests/contract.test.js
+# says when Omarchy has a list that is missing here.
+KNOWN_DEFAULTS = [
+    ["Dictation", "ScreenRecording", "Reminder", "NightLight", "Dnd", "StayAwake"],  # 4.0
+    ["PasswordlessSudo", "ScreenRecording", "RemoteSession", "Reminder", "NightLight", "Dnd", "StayAwake"],  # 4.5
+]
+
+
+# ------------------------------------------------------------- files
+
+def read_json(path, fallback=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return fallback
+    except ValueError as e:
+        sys.exit(f"omarchy-buddy-setup: {path}: {e}")
+
+
+def write_json(path, data):
+    return write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_text(path, text):
+    """Backup first, then replace atomically with the file's own rights.
+    Returns the backup's path ("" for a new file)."""
+    backup = ""
+    mode = 0o600
+    path = os.path.realpath(path)  # a symlink (dotfiles) stays a symlink
+    if os.path.exists(path):
+        backup = f"{path}.bak-omarchy-buddy-{time.strftime('%Y%m%d-%H%M%S')}"
+        shutil.copy2(path, backup)
+        for old in sorted(glob.glob(glob.escape(path) + ".bak-omarchy-buddy-*"))[:-3]:  # (TIME sorts as text)
+            os.remove(old)
+        mode = os.stat(path).st_mode & 0o777
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp-omarchy-buddy"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    os.fchmod(fd, mode)  # not the caller's umask (omarchy-buddy-check runs under 077)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    return backup
+
+
+def link(target, path):
+    """path → target; a real file there is kept as *.vor-omarchy-buddy.
+    True if it changed."""
+    if os.path.exists(path) and not os.path.islink(path):
+        os.replace(path, path + ".vor-omarchy-buddy")
+    if os.path.islink(path) and os.readlink(path) == target:
+        return False
+    tmp = path + ".tmp-omarchy-buddy"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(target, tmp)
+    os.replace(tmp, path)
+    return True
+
+
+def unlink_ours(path):
+    """Remove path if it is a link into this checkout."""
+    if os.path.islink(path) and os.path.realpath(path).startswith(REPO + os.sep):
+        os.remove(path)
+
+
+# ------------------------------------------------- ~/.claude/settings.json
+
+def guarded(path, fallback="", arg=""):
+    """The command Claude (Codex) runs for one of our scripts: nothing (or
+    fallback, the old status line) once the script is gone. Quoted for any HOME."""
+    q = shlex.quote(path)
+    run = f"exec {q} {arg}" if arg else f"exec {q}"
+    return f"if [ -x {q} ]; then {run}; else exec sh -c {shlex.quote(fallback)}; fi" if fallback \
+        else f"if [ -x {q} ]; then {run}; fi"
+
+
+def is_ours(command, paths):
+    """command runs one of paths: bare (before the guard) or guarded."""
+    return isinstance(command, str) and any(
+        command == p or command.startswith((f"if [ -x {shlex.quote(p)} ]; then exec {shlex.quote(p)};",
+                                            f"if [ -x {shlex.quote(p)} ]; then exec {shlex.quote(p)} ")) for p in paths)
+
+
+def our_handler(handler):
+    return isinstance(handler, dict) and is_ours(handler.get("command"), OURS)
+
+
+def our_group(group):
+    return isinstance(group, dict) and isinstance(group.get("hooks"), list) and any(
+        our_handler(h) for h in group["hooks"])
+
+
+def guarded_fallback(command):
+    """The old status line inside our guarded one ("" if none): it is
+    there even when statusline.json is gone."""
+    for path in OUR_STATUSLINES:
+        q = shlex.quote(path)
+        head = f"if [ -x {q} ]; then exec {q}; else exec sh -c "
+        if isinstance(command, str) and command.startswith(head) and command.endswith("; fi"):
+            try:
+                words = shlex.split(command[len(head):-len("; fi")])
+            except ValueError:
+                return ""
+            return words[0] if len(words) == 1 else ""
+    return ""
+
+
+def usual_settings(settings):
+    """settings.json in the form Claude documents; anything else is left alone."""
+    hooks = settings.get("hooks", {}) if isinstance(settings, dict) else None
+    line = settings.get("statusLine") if isinstance(settings, dict) else None
+    return isinstance(hooks, dict) and all(isinstance(v, list) for v in hooks.values()) \
+        and (line is None or isinstance(line, dict))
+
+
+def place_ours(hooks, events, command):
+    """Our group per event in place of the first one of ours (old or
+    outdated ones included), further ones of ours dropped; appended only
+    where none is. Others' handlers in a group of ours stay there (with its
+    matcher), ours goes right after; only a group left empty is dropped.
+    Groups of others keep their order, so a second run writes the same
+    bytes. events None: ours out."""
+    for event in list(hooks):
+        ours = {"hooks": [{"type": "command", "command": command, **events[event]}]} \
+            if events and event in events else None
+        new = []
+        for g in hooks[event]:
+            if not our_group(g):
+                new.append(g)
+                continue
+            rest = [h for h in g["hooks"] if not our_handler(h)]
+            if rest:
+                new.append({**g, "hooks": rest})
+            if ours is not None:
+                new.append(ours)
+                ours = None
+        hooks[event] = new
+        if not new:
+            del hooks[event]
+    for event, options in (events or {}).items():
+        if event not in hooks:
+            hooks[event] = [{"hooks": [{"type": "command", "command": command, **options}]}]
+        elif not any(our_group(g) for g in hooks[event]):
+            hooks[event].append({"hooks": [{"type": "command", "command": command, **options}]})
+
+
+def claude_hooks(settings, remove):
+    """settings.json with our hooks (or without)."""
+    hooks = settings.setdefault("hooks", {})
+    place_ours(hooks, None if remove else EVENTS, guarded(HOOK))
+    if not hooks:
+        del settings["hooks"]
+
+
+def wrap_statusline(settings, remove, inner):
+    """Our status line in front of the user's (or theirs back). inner: the
+    command kept in statusline.json, or else the one in our guard. Returns
+    the command to keep now, None to delete statusline.json, or False to
+    leave it."""
+    line = settings.get("statusLine")
+    ours = isinstance(line, dict) and is_ours(line.get("command"), OUR_STATUSLINES)
+    kept = guarded_fallback(line["command"]) if ours and not inner else ""
+    inner = inner or kept
+    if remove:
+        if not ours:
+            return False
+        if inner:
+            line["command"] = inner
+        else:
+            del settings["statusLine"]
+        return None
+    if ours:
+        line["command"] = guarded(STATUSLINE, inner)
+        return kept or False  # statusline.json gone: written again
+    if isinstance(line, dict) and line.get("type", "command") == "command" and line.get("command"):
+        old = line["command"]
+        line["command"] = guarded(STATUSLINE, old)
+        return old
+    settings["statusLine"] = {"type": "command", "command": guarded(STATUSLINE)}
+    return ""
+
+
+def setup_claude(remove):
+    if not os.path.isdir(os.path.dirname(SETTINGS)):
+        print(t("setup.noClaude"))
+        return
+    settings = read_json(SETTINGS, {})
+    if not usual_settings(settings):
+        print(t("setup.claudeOdd", file=SETTINGS))
+        return
+    before = json.dumps(settings, sort_keys=True)
+    inner = (read_json(INNER, {}) or {}).get("command") or ""
+    claude_hooks(settings, remove)
+    keep = wrap_statusline(settings, remove, inner)
+    same = json.dumps(settings, sort_keys=True) == before
+    backup = "" if same else write_json(SETTINGS, settings)
+    if keep is None:
+        with contextlib.suppress(OSError):
+            os.remove(INNER)
+    elif keep is not False:
+        buddy.save_json(INNER, {"command": keep}, ensure_ascii=False)
+    print(t("setup.claudeSame") if same else t("remove.claude" if remove else "setup.claude", backup=backup or "–"))
+
+
+# ------------------------------------------------------ ~/.codex/hooks.json
+
+def codex_label(event):
+    """SessionStart → session_start, as Codex names events in its keys."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower()
+
+
+def codex_hash(event, handler):
+    """The hash Codex trusts a hook by (codex-rs/hooks discovery.rs
+    hook_hash, 0.165): its normalized form (timeout filled in, async spelled
+    out) as JSON with sorted keys. tests/record-codex-events checks it
+    against the installed Codex."""
+    label = codex_label(event)
+    timeout = handler.get("timeout")
+    timeout = min(3, max(1, timeout or 1)) if label in ("session_end", "interrupt") else max(1, timeout or 600)
+    entry = {"type": "command", "command": handler.get("command"), "timeout": timeout,
+             "async": handler.get("async", False)}
+    if "statusMessage" in handler:
+        entry["statusMessage"] = handler["statusMessage"]
+    identity = json.dumps({"event_name": label, "hooks": [entry]}, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def codex_trust(path, hooks, pick):
+    """{key: hash} for every handler pick() chooses. Codex keys a hook by
+    the hooks.json path it read, event, group and place."""
+    return {f"{path}:{codex_label(event)}:{gi}:{hi}": codex_hash(event, h)
+            for event, groups in hooks.items() if isinstance(groups, list)
+            for gi, g in enumerate(groups) if isinstance(g, dict) and isinstance(g.get("hooks"), list)
+            for hi, h in enumerate(g["hooks"]) if pick(h)}
+
+
+def trust_toml(trust):
+    return "".join(f'\n[hooks.state."{key}"]\nenabled = true\ntrusted_hash = "{h}"\n' for key, h in trust.items())
+
+
+def codex_homes():
+    """~/.codex and every Codex account home of Omarchy 4.5 that shares its
+    hooks.json (omarchy agent account: a link back to ~/.codex)."""
+    homes = [CODEX_DIR]
+    accounts = (read_json(CODEX_ACCOUNTS, {}) or {}).get("accounts") if os.path.exists(CODEX_ACCOUNTS) else []
+    for a in accounts if isinstance(accounts, list) else []:
+        home = a.get("home") if isinstance(a, dict) else None
+        if isinstance(home, str) and home and os.path.realpath(os.path.join(home, "hooks.json")) == \
+                os.path.realpath(CODEX_HOOKS) and os.path.normpath(home) not in homes:
+            homes.append(os.path.normpath(home))
+    return homes
+
+
+STATE_HEADER = re.compile(r'^\[hooks\.state\."([^"\\]*)"\]\s*$')
+
+
+def edit_trust(text, drop, rename, add):
+    """config.toml's text without the [hooks.state."KEY"] tables in drop,
+    those in rename under their new key, add appended. None if the file
+    keeps such a table in another form (only Codex's own is edited)."""
+    lines = text.splitlines(keepends=True)
+    out, skip, found = [], False, set()
+    for line in lines:
+        m = STATE_HEADER.match(line)
+        if m or line.lstrip().startswith("["):
+            if skip and out and out[-1].strip():
+                out.append("\n")  # the empty line before it went with the table dropped
+            skip = False
+        if m and m.group(1) in drop:
+            found.add(m.group(1))
+            skip = True
+            while out and not out[-1].strip():  # the empty line trust_toml put before it
+                out.pop()
+        elif m and m.group(1) in rename:
+            found.add(m.group(1))
+            line = f'[hooks.state."{rename[m.group(1)]}"]\n'
+        if not skip:
+            out.append(line)
+    if found != (set(drop) | set(rename)):
+        return None
+    result = "".join(out)
+    if add:
+        result = result.rstrip("\n") + "\n" + trust_toml(add) if result.strip() else trust_toml(add).lstrip("\n")
+    return result
+
+
+def codex_change(config, text, remove):
+    """(hooks.json, config.toml text) with our hooks and their trust, or
+    without; None for the text if it cannot be changed safely. Handlers of
+    others that move (a group of ours before them gone, ours taken out of
+    their group) take their trust along."""
+    hooks = config.setdefault("hooks", {})
+    homes = codex_homes()
+    old = {}
+    for home in homes:
+        old.update(codex_trust(os.path.join(home, "hooks.json"), hooks, our_handler))
+
+    def handlers():
+        return [(event, gi, hi, h) for event, groups in hooks.items() for gi, g in enumerate(groups)
+                if isinstance(g, dict) and isinstance(g.get("hooks"), list)
+                for hi, h in enumerate(g["hooks"]) if isinstance(h, dict)]
+    before = handlers()  # kept alive: compared by identity
+    place_ours(hooks, None if remove else CODEX_EVENTS, guarded(HOOK, arg="--codex"))
+    rename = {}
+    for event, gi, hi, h in handlers():
+        was = next(((ogi, ohi) for e, ogi, ohi, o in before if o is h and e == event), (gi, hi))
+        for home in homes if was != (gi, hi) else []:
+            base = f"{os.path.join(home, 'hooks.json')}:{codex_label(event)}"
+            rename[f"{base}:{was[0]}:{was[1]}"] = f"{base}:{gi}:{hi}"
+    add = {}
+    for home in [] if remove else homes:
+        add.update(codex_trust(os.path.join(home, "hooks.json"), hooks, our_handler))
+    state = (tomllib.loads(text).get("hooks") or {}).get("state") or {}
+    state = {k: v for k, v in state.items() if isinstance(v, dict)}
+    drop = {k for k in old if k in state and add.get(k) != state[k].get("trusted_hash")}
+    rename = {k: v for k, v in rename.items() if k in state}
+    after = {k: v for k, v in state.items() if k not in drop and k not in rename}
+    after.update({v: state[k] for k, v in rename.items()})
+    stale = {k for k, h in add.items() if k in after and after[k].get("trusted_hash") != h and k in state}
+    drop |= stale
+    add = {k: h for k, h in add.items() if k not in after or k in stale}
+    if not drop and not rename and not add:
+        return config, text
+    new_text = edit_trust(text, drop, rename, add)
+    try:
+        # What Codex will read must be exactly that, or nothing changes.
+        got = (tomllib.loads(new_text).get("hooks") or {}).get("state") or {} if new_text is not None else None
+    except ValueError:
+        got = None
+    want = {k: v for k, v in after.items() if k not in stale}
+    want.update({k: {"enabled": True, "trusted_hash": h} for k, h in add.items()})
+    if got is None or {k: v for k, v in got.items() if isinstance(v, dict)} != want:
+        return config, None
+    return config, new_text
+
+
+def place_flat(hooks, events, command):
+    """place_ours for Crush's entries without groups."""
+    for event in list(hooks):
+        ours = [h for h in hooks[event] if isinstance(h, dict) and is_ours(h.get("command"), OURS)]
+        new = [h for h in hooks[event] if h not in ours]
+        if events and event in events:
+            mine = {"command": command, **events[event]}
+            new.insert(hooks[event].index(ours[0]) if ours else len(new), mine)
+        hooks[event] = new
+        if not new:
+            del hooks[event]
+    for event, options in (events or {}).items():
+        hooks.setdefault(event, [{"command": command, **options}])
+
+
+MISSING = []  # agents without their folder, reported in one line
+ODD = []  # agents whose file the setup left alone (the island's switch says so)
+
+
+def odd(name, text):
+    ODD.append(name)
+    print(text)
+
+
+def setup_agent(agent, remove):
+    """One of AGENT_HOOKS: our hook in or out of its file, other hooks stay
+    where they are. A file it cannot read only skips this agent."""
+    name, folder, file, events, form = AGENT_HOOKS[agent]
+    path = os.path.join(folder, file)
+    if not os.path.isdir(folder):
+        if not remove:
+            MISSING.append(name)
+        return
+    if form == "toml":
+        return setup_toml(agent, path, remove)
+    try:
+        with open(path) as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        config = {}
+    except ValueError:  # comments (JSONC) or broken: not ours to rewrite
+        config = None
+    before = json.dumps(config, sort_keys=True)
+    command = guarded(HOOK, arg=f"--agent {agent}")
+    if form in ("named", "kiro"):
+        config = own_hooks(agent, config, remove)
+    elif not usual_settings(config) or (form == "flat" and not all(
+            isinstance(h, dict) for v in config.get("hooks", {}).values() for h in v)):
+        config = None
+    elif form == "own":
+        if config and not all(isinstance(h, dict) and is_ours(h.get("bash"), OURS)
+                              for v in config.get("hooks", {}).values() for h in v):
+            config = None  # someone else's file by that name
+        else:
+            config = {} if remove else {"version": 1, "hooks": {e: [{"type": "command", "bash": command, **o}]
+                                                                 for e, o in events.items()}}
+    else:
+        hooks = config.setdefault("hooks", {})
+        (place_flat if form == "flat" else place_ours)(hooks, None if remove else events, command)
+        if not hooks:
+            del config["hooks"]
+        if agent == "muse" and not remove:
+            config.setdefault("schema_version", 1)  # Muse does not start without it
+    if config is None:
+        odd(name, t("setup.agentOdd", agent=name, file=path))
+        return
+    if json.dumps(config, sort_keys=True) == before:
+        if not remove:
+            print(t("setup.agentSame", agent=name))
+        return
+    backup = ""
+    if (not config or config == {"schema_version": 1}) and not os.path.islink(path):
+        os.remove(path)  # it held only our hooks (the setup wrote it; Muse's defaults without it)
+    else:
+        backup = write_json(path, config)
+    print(t("remove.agent" if remove else "setup.agent", agent=name, backup=backup or "–"))
+
+
+def own_hooks(agent, config, remove):
+    """Antigravity's file with our group (named after us) in or out, others'
+    groups as they are; Kiro's file of ours alone. None: not a form we know,
+    or (Kiro) someone else's file by our name."""
+    events = AGENT_HOOKS[agent][3]
+    if not isinstance(config, dict):
+        return None
+    if AGENT_HOOKS[agent][4] == "named":
+        if not isinstance(config.get(NAME, {}), dict):
+            return None
+        config = {k: v for k, v in config.items() if k != NAME}
+        if not remove:
+            # its events carry no name: the command passes it; the matcher only for tool events
+            config[NAME] = {e: [{"matcher": "*", "hooks": [{"type": "command", "command": c, **o}]}
+                                if e.endswith("ToolUse") else {"type": "command", "command": c, **o}]
+                            for e, o in events.items()
+                            for c in [guarded(HOOK, arg=f"--agent {agent} {e}")]}
+        return config
+    hooks = config.get("hooks", [])
+    if not isinstance(hooks, list) or not all(isinstance(h, dict) and isinstance(h.get("action"), dict)
+                                              and is_ours(h["action"].get("command"), OURS) for h in hooks):
+        return None
+    command = guarded(HOOK, arg=f"--agent {agent}")
+    return {} if remove else {"version": "v1", "hooks": [
+        {"name": f"omarchy-buddy-{e}", "trigger": e, "action": {"type": "command", "command": command}, **o}
+        for e, o in events.items()]}
+
+
+def setup_toml(agent, path, remove):
+    """Kimi: our [[hooks]] between our two marker lines, in place, at the
+    end when new. Written only if the result still parses and has them all."""
+    name, _, _, events, _ = AGENT_HOOKS[agent]
+    try:
+        with open(path) as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    except (OSError, ValueError):
+        text = None
+    command = guarded(HOOK, arg=f"--agent {agent}")
+    block = "\n".join([TOML_START, *(f'[[hooks]]\nevent = "{e}"\ncommand = {json.dumps(command)}\ntimeout = {o["timeout"]}'
+                                     for e, o in events.items()), TOML_END])
+    marked = re.compile(rf"\n*^{re.escape(TOML_START)}$.*?^{re.escape(TOML_END)}$\n?", re.M | re.S)
+    try:
+        tomllib.loads(text)
+    except (TypeError, ValueError):
+        text = None
+    if text is None or text.count(TOML_START) > 1:
+        odd(name, t("setup.agentOdd", agent=name, file=path))
+        return
+    if remove and TOML_START not in text:
+        return
+    if remove:
+        new = marked.sub("\n", text).strip("\n")
+        new = new + "\n" if new else ""
+    elif TOML_START in text:
+        new = marked.sub(lambda m: ("\n\n" if m.start() else "") + block + "\n", text, count=1)
+    else:
+        new = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block + "\n"
+    try:
+        got = tomllib.loads(new).get("hooks", [])
+        ours = [h for h in got if isinstance(h, dict) and h.get("command") == command] if isinstance(got, list) else None
+    except ValueError:
+        ours = None
+    if ours is None or len(ours) != (0 if remove else len(events)):
+        odd(name, t("setup.agentOdd", agent=name, file=path))  # (e.g. hooks = [...] inline: ours would break it)
+        return
+    if new == text:
+        if not remove:
+            print(t("setup.agentSame", agent=name))
+        return
+    if not new and not os.path.islink(path):
+        os.remove(path)  # it held only our hooks
+        backup = ""
+    else:
+        backup = write_text(path, new)
+    print(t("remove.agent" if remove else "setup.agent", agent=name, backup=backup or "–"))
+
+
+def plugin_stub(agent, source):
+    """Our file for a plugin agent: it loads agent-plugins/SOURCE (Pi and
+    omp share one, told apart by the name) and does nothing if that fails."""
+    real = json.dumps(os.path.join(REPO, "agent-plugins", source))
+    if agent == "opencode":
+        return PLUGIN_MARK + ('export default { id: "omarchy-buddy", setup: async (ctx) => {\n'
+                              f"  try {{ return await (await import({real})).default.setup(ctx) }} catch {{}}\n}} }}\n")
+    return PLUGIN_MARK + ("export default async function (pi) {\n"
+                          f"  try {{ return (await import({real})).default(pi, {json.dumps(agent)}) }} catch {{}}\n}}\n")
+
+
+def setup_plugin(agent, remove):
+    """One of AGENT_PLUGINS: our file in or out of the agent's folder. A file
+    of that name that is not ours stays."""
+    name, folder, file, source = AGENT_PLUGINS[agent]
+    path = os.path.join(folder, file)
+    if not os.path.isdir(folder):
+        if not remove:
+            MISSING.append(name)
+        return
+    try:
+        with open(path) as f:
+            old = f.read()
+    except FileNotFoundError:
+        old = None
+    except (OSError, ValueError):
+        old = ""
+    if old is not None and not old.startswith(PLUGIN_MARK):
+        odd(name, t("setup.agentOdd", agent=name, file=path))
+        return
+    if remove:
+        if old is not None:
+            os.remove(path)
+            print(t("remove.agentPlugin", agent=name))
+        return
+    new = plugin_stub(agent, source)
+    if old == new:
+        print(t("setup.agentPluginSame", agent=name))
+        return
+    # No backup: the file is ours alone, and a copy next to it could be loaded as a second plugin.
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp-omarchy-buddy"
+    with open(tmp, "w") as f:
+        f.write(new)
+    os.replace(tmp, path)
+    print(t("setup.agentPlugin", agent=name, file=path.replace(HOME, "~")))
+
+
+def setup_codex(remove):
+    if not os.path.isdir(CODEX_DIR):
+        print(t("setup.noCodex"))
+        return
+    config = read_json(CODEX_HOOKS, {})
+    try:
+        with open(CODEX_CONFIG) as f:
+            text = f.read()
+        tomllib.loads(text)
+    except FileNotFoundError:
+        text = ""
+    except (OSError, ValueError):
+        text = None
+    hooks = config.get("hooks", {}) if isinstance(config, dict) else None
+    if text is None or not isinstance(hooks, dict) or not all(isinstance(v, list) for v in hooks.values()):
+        odd("Codex", t("setup.codexOdd", file=CODEX_HOOKS if text is not None else CODEX_CONFIG))
+        return
+    before = json.dumps(config, sort_keys=True)
+    config, new_text = codex_change(config, text, remove)
+    if not config["hooks"]:
+        del config["hooks"]
+    if new_text is None:
+        odd("Codex", t("setup.codexOdd", file=CODEX_CONFIG))
+        return
+    if json.dumps(config, sort_keys=True) == before and new_text == text:
+        if not remove:
+            print(t("setup.codexSame"))
+        return
+    backup = ""
+    if not config and not os.path.islink(CODEX_HOOKS):
+        os.remove(CODEX_HOOKS)  # it held only our hooks (the setup wrote it)
+    elif json.dumps(config, sort_keys=True) != before:
+        backup = write_json(CODEX_HOOKS, config)
+    if new_text != text and not new_text.strip() and os.path.isfile(CODEX_CONFIG):
+        os.remove(CODEX_CONFIG)  # it held only our trust (the setup wrote it)
+    elif new_text != text:
+        write_text(CODEX_CONFIG, new_text)
+    print(t("remove.codex" if remove else "setup.codex", backup=backup or "–"))
+
+
+# ----------------------------------------- ~/.config/omarchy/shell.json
+
+def default_indicators():
+    """Omarchy's own list, read from its bar (it can grow); ours if that fails."""
+    try:
+        with open(os.path.join(OMARCHY, "shell/plugins/bar/widgets/Indicators.qml")) as f:
+            m = re.search(r"defaultIndicatorEntries:\s*\[([^\]]*)\]", f.read())
+        found = re.findall(r'"(\w+)"', m.group(1)) if m else []
+        return found or KNOWN_DEFAULTS[-1]
+    except OSError:
+        return KNOWN_DEFAULTS[-1]
+
+
+def indicator_entries(config):
+    """Every omarchy.indicators entry in the bar, in order."""
+    layout = ((config.get("bar") or {}).get("layout") or {})
+    return [e for section in ("left", "center", "right") for e in layout.get(section) or []
+            if isinstance(e, dict) and e.get("id") == "omarchy.indicators"]
+
+
+def from_default(items, defaults):
+    """Whether items is Omarchy's list (the current or an older one) minus Dnd."""
+    return any(items == [x for x in d if x != "Dnd"] for d in KNOWN_DEFAULTS + [defaults])
+
+
+def refresh_indicators(config, defaults):
+    """A list the setup derived from an older Omarchy default follows the
+    current one (4.5 dropped Dictation, added PasswordlessSudo and
+    RemoteSession); a list changed by hand stays."""
+    want = [x for x in defaults if x != "Dnd"]
+    for entry in indicator_entries(config):
+        items = entry.get("items")
+        if isinstance(items, list) and items != want and from_default(items, defaults):
+            entry["items"] = want
+
+
+def named_sections(config):
+    """The bar layout's sections that are lists, with their names."""
+    layout = (config.get("bar") or {}).get("layout")
+    return [(k, v) for k, v in layout.items() if isinstance(v, list)] if isinstance(layout, dict) else []
+
+
+def entry_id(entry):
+    return entry.get("id") if isinstance(entry, dict) else None
+
+
+def ours(entry):
+    return isinstance(entry, dict) and entry.get("id") == PLUGIN_ID
+
+
+def migrate_id(value):
+    """shell.json or the setup's record with the plugin's id before 1.2.0 as
+    the new one (#209): the bar entry keeps its place and settings. Where the
+    bar has both, the old entry (the user's place) wins."""
+    if isinstance(value, dict) and any(entry_id(e) == OLD_ID for _, s in named_sections(value) for e in s):
+        for _, section in named_sections(value):
+            section[:] = [e for e in section if not ours(e)]
+    value = renamed(value)
+    for key in ("plugins", "disabledPlugins"):
+        if isinstance(value, dict) and isinstance(value.get(key), list):
+            value[key] = [x for i, x in enumerate(value[key]) if x not in value[key][:i]]
+    return value
+
+
+def renamed(value):
+    if value == OLD_ID:
+        return PLUGIN_ID
+    if isinstance(value, dict):
+        return {k: renamed(v) for k, v in value.items()}
+    return [renamed(v) for v in value] if isinstance(value, list) else value
+
+
+def place_widget(config, default_layout):
+    """The bar widget right after Omarchy's clock (at the end of the centre
+    without one), unless it is in the bar already. A bar widget is on while
+    it is in the bar (Omarchy's rule), so it leaves plugins[] (before #182
+    the plugin was a service there). A shell.json without a layout gets
+    Omarchy's (the bar shows that one then); without Omarchy's at hand the
+    plugin stays a service in plugins[] (a layout of only ours would empty
+    the bar). Returns what it added for the layout: "bar", "layout" or ""."""
+    bar = config.get("bar")
+    if not (isinstance(bar, dict) and isinstance(bar.get("layout"), dict)) and not default_layout:
+        plugins = config.get("plugins") or []
+        config["plugins"] = plugins if any(ours(p) for p in plugins) else plugins + [{"id": PLUGIN_ID}]
+        return ""
+    added = "" if isinstance(bar, dict) else "bar"
+    bar = config.setdefault("bar", {})
+    if not isinstance(bar.get("layout"), dict):
+        bar["layout"] = json.loads(json.dumps(default_layout))
+        added = added or "layout"
+    if not any(ours(e) for _, section in named_sections(config) for e in section):
+        for _, section in named_sections(config):
+            clock = next((i for i, e in enumerate(section) if isinstance(e, dict) and e.get("id") == "omarchy.clock"), None)
+            if clock is not None:
+                section.insert(clock + 1, {"id": PLUGIN_ID})
+                break
+        else:
+            if not isinstance(bar["layout"].get("center"), list):
+                bar["layout"]["center"] = []
+            bar["layout"]["center"].append({"id": PLUGIN_ID})
+    config["plugins"] = [p for p in config.get("plugins") or [] if not ours(p)]
+    return added
+
+
+def shell_setup(config, defaults, default_layout=None):
+    """shell.json with Omarchy-Buddy on. Returns (config, record): the record
+    says what was there before, for shell_remove."""
+    record = {"disabledAdded": False, "indicators": [], "barAdded": place_widget(config, default_layout)}
+    disabled = config.setdefault("disabledPlugins", [])
+    if "omarchy.notifications" not in disabled:
+        disabled.append("omarchy.notifications")
+        record["disabledAdded"] = True
+    for i, entry in enumerate(indicator_entries(config)):
+        items = entry.get("items")
+        shown = items if isinstance(items, list) and items else defaults
+        if "Dnd" in shown and record["indicators"] is not None:
+            record["indicators"].append({"index": i, "items": items})
+        if "Dnd" in shown:
+            entry["items"] = [x for x in shown if x != "Dnd"]
+    refresh_indicators(config, defaults)
+    return config, record
+
+
+def shell_remove(config, record, defaults, default_layout=None):
+    """shell.json without Omarchy-Buddy, Omarchy's notifications back on.
+    Without a record the Dnd indicator comes back. Omarchy's weather and the
+    bar's order go back as they were before the island's switches (#184)."""
+    record = record if isinstance(record, dict) else {}
+    arrange_bar(config, record, False)
+    show_weather(config, record)
+    config["disabledPlugins"] = [p for p in config.get("disabledPlugins") or [] if p != "omarchy.notifications"]
+    if not config["disabledPlugins"]:
+        del config["disabledPlugins"]  # (Omarchy's default file has none)
+    config["plugins"] = [p for p in config.get("plugins") or [] if not ours(p)]
+    for _, section in named_sections(config):
+        section[:] = [e for e in section if not ours(e)]
+    entries = indicator_entries(config)
+    changed = (record or {}).get("indicators")
+    if changed is None:
+        changed = [{"index": i, "items": None} for i, e in enumerate(entries)
+                   if isinstance(e.get("items"), list) and e["items"] and "Dnd" not in e["items"]]
+    for c in changed:
+        if c["index"] >= len(entries):
+            continue
+        entry = entries[c["index"]]
+        items = entry.get("items")
+        if not isinstance(items, list) or "Dnd" in items:
+            continue
+        if c["items"] is None and from_default(items, defaults):
+            del entry["items"]  # it was Omarchy's default list
+        elif isinstance(c["items"], list) and [x for x in c["items"] if x != "Dnd"] == items:
+            entry["items"] = c["items"]
+        else:
+            # Changed by hand since: Dnd back where Omarchy has it.
+            pos = sum(1 for x in items if x in defaults[:defaults.index("Dnd")]) if "Dnd" in defaults else len(items)
+            entry["items"] = items[:pos] + ["Dnd"] + items[pos:]
+    # Omarchy's layout the setup wrote into a shell.json without one goes
+    # again while it is still Omarchy's.
+    added, bar = (record or {}).get("barAdded"), config.get("bar")
+    if added and isinstance(bar, dict) and bar.get("layout") == default_layout:
+        del bar["layout"]
+        if added == "bar" and not bar:
+            del config["bar"]
+    return config
+
+
+def merge_records(old, new):
+    """A second setup adds to what the first one changed; None (unknown) wins."""
+    if not isinstance(old, dict):
+        return new
+    known = None if old.get("indicators") is None or new["indicators"] is None else old["indicators"]
+    if known is not None:
+        known = known + [c for c in new["indicators"] if c["index"] not in {k["index"] for k in known}]
+    return {**old, "disabledAdded": bool(old.get("disabledAdded")) or new["disabledAdded"], "indicators": known,
+            "barAdded": old.get("barAdded") or new["barAdded"]}
+
+
+def setup_shell(remove):
+    """True if shell.json changed (only then the shell restarts)."""
+    defaults = default_indicators()
+    omarchy_shell = read_json(os.path.join(OMARCHY, "config/omarchy/shell.json"), {"version": 1})
+    config = read_json(SHELL_JSON)
+    if config is None:
+        if remove:
+            return False
+        # No shell.json of its own: the shell runs on Omarchy's defaults.
+        config = json.loads(json.dumps(omarchy_shell))
+    elif not isinstance(config, dict) or config.get("version") != 1:
+        print(t("setup.shellOdd", file=SHELL_JSON))
+        return False
+    before = json.dumps(config, sort_keys=True)
+    config = migrate_id(config)
+    layout = ((omarchy_shell or {}).get("bar") or {}).get("layout")
+    if remove:
+        config = shell_remove(config, migrate_id(read_json(RECORD, {})), defaults, layout)
+    else:
+        config, record = shell_setup(config, defaults, layout)
+        first = migrate_id(read_json(RECORD))
+        record = merge_records(first, record)
+        if first is None:
+            record["since"] = time.time()  # the first setup: the island greets once (#192)
+        set_weather(config, record, buddy.config().get("weather") is True)
+    if json.dumps(config, sort_keys=True) == before:
+        if not remove and first is None:
+            save_record(record)  # the island's sign that the setup ran (#192)
+        print(t("setup.shellSame"))
+        return False
+    backup = write_json(SHELL_JSON, config)
+    if remove:
+        with contextlib.suppress(OSError):
+            os.remove(RECORD)
+    else:
+        save_record(record)
+    print(t("remove.shell" if remove else "setup.shell", backup=backup or "–"))
+    return True
+
+
+def save_record(record):
+    buddy.save_json(RECORD, record)
+
+
+# ------------------------- Omarchy's weather, the bar's order (#184)
+
+WEATHER = "omarchy.weather"
+
+
+def set_weather(config, record, hide):
+    """"Omarchy-Wetter ersetzen": Omarchy's weather out of the bar, where it
+    stood goes into the record; off, it goes back there. A weather the user
+    took out by hand stays out (only what the switch took comes back)."""
+    if not hide:
+        show_weather(config, record)
+        return
+    for name, section in named_sections(config):
+        ids = [entry_id(e) for e in section]
+        if WEATHER in ids:
+            i = ids.index(WEATHER)
+            record["weather"] = {"section": name, "after": ids[i - 1] if i else None,
+                                 "before": ids[i + 1] if i + 1 < len(ids) else None, "index": i, "entry": section.pop(i)}
+            return
+
+
+def show_weather(config, record):
+    """Omarchy's weather back between the same neighbours (the one before it,
+    else the one after it), else at the same place."""
+    spot = record.pop("weather", None)
+    sections = dict(named_sections(config))
+    if not isinstance(spot, dict) or not sections \
+            or any(entry_id(e) == WEATHER for s in sections.values() for e in s):
+        return
+    section = sections.get(spot.get("section")) or sections.get("center") or next(iter(sections.values()))
+    ids = [entry_id(e) for e in section]
+    after, follows, index = spot.get("after"), spot.get("before"), spot.get("index")
+    at = ids.index(after) + 1 if after is not None and after in ids \
+        else ids.index(follows) if follows is not None and follows in ids \
+        else min(index if isinstance(index, int) and index >= 0 else len(section), len(section))
+    section.insert(at, spot["entry"] if isinstance(spot.get("entry"), dict) else {"id": WEATHER})
+
+
+def arranged(section):
+    """The section with O-Morchy as "Leiste ordnen" leaves it: the clock right
+    before it, Omarchy's indicators right after it, the rest in its order."""
+    buddy_entry = next(e for e in section if ours(e))
+    clock = [e for e in section if entry_id(e) == "omarchy.clock"][:1]
+    indicators = [e for e in section if entry_id(e) == "omarchy.indicators"]
+    group = clock + [buddy_entry] + indicators
+    first = min(next(i for i, e in enumerate(section) if e is g) for g in clock + [buddy_entry])
+    rest = [e for e in section if not any(e is g for g in group)]
+    before = sum(1 for e in section[:first] if not any(e is g for g in group))
+    return rest[:before] + group + rest[before:]
+
+
+def bar_section(config):
+    return next(((n, s) for n, s in named_sections(config) if any(ours(e) for e in s)), (None, None))
+
+
+def bar_state(config, record):
+    """For the settings page: "offer" (arranging changes something), "undo"
+    (arranged by it and unchanged since) or "" (nothing to do)."""
+    name, section = bar_section(config)
+    if section is None:
+        return ""
+    if arranged(section) != section:
+        return "offer"
+    done = record.get("barOrder")
+    same = isinstance(done, dict) and done.get("section") == name and isinstance(done.get("before"), list) \
+        and sorted(json.dumps(e, sort_keys=True) for e in done["before"]) == sorted(json.dumps(e, sort_keys=True) for e in section)
+    return "undo" if same and done["before"] != section else ""
+
+
+def arrange_bar(config, record, on):
+    """"Leiste ordnen" (only on request, #184): on arranges the section with
+    O-Morchy and keeps how it was; off puts that back while the section still
+    holds the same entries."""
+    name, section = bar_section(config)
+    if on:
+        if section is not None and arranged(section) != section:
+            record["barOrder"] = {"section": name, "before": json.loads(json.dumps(section))}
+            section[:] = arranged(section)
+        return
+    if bar_state(config, record) == "undo":
+        section[:] = record["barOrder"]["before"]
+    record.pop("barOrder", None)
+
+
+def shell_switch(change):
+    """One of the island's switches on shell.json: only that change (with a
+    backup), the record kept; no restart (Omarchy's shell follows the file).
+    Returns (config, record), config None when shell.json is not one the
+    setup takes (the page shows why)."""
+    config = read_json(SHELL_JSON)
+    if config is None:
+        config = read_json(os.path.join(OMARCHY, "config/omarchy/shell.json"), {"version": 1})
+    elif not isinstance(config, dict) or config.get("version") != 1:
+        print(t("setup.shellOddSwitch", file=SHELL_JSON))
+        return None, {}
+    record = read_json(RECORD, {})
+    record = record if isinstance(record, dict) else {}
+    before = json.dumps(config, sort_keys=True), json.dumps(record, sort_keys=True)
+    if change:
+        change(config, record)
+    if json.dumps(config, sort_keys=True) != before[0]:
+        write_json(SHELL_JSON, config)
+    if json.dumps(record, sort_keys=True) != before[1]:
+        save_record(record)
+    return config, record
+
+
+# -------------------------------------------- ~/.bashrc, ~/.zshrc (#168)
+
+def rc_files():
+    """The shell start files the user has: ~/.bashrc (Omarchy's bash leaves
+    it to the user) and zsh's .zshrc ($ZDOTDIR inside HOME, ~, ~/.config/zsh)."""
+    zdot = os.environ.get("ZDOTDIR", "")
+    zsh = [os.path.join(d, ".zshrc") for d in (zdot if zdot.startswith(HOME + os.sep) else "", HOME,
+                                               os.path.join(HOME, ".config/zsh")) if d]
+    return [p for p in [os.path.join(HOME, ".bashrc"), next((z for z in zsh if os.path.isfile(z)), "")]
+            if p and os.path.isfile(p)]
+
+
+def chezmoi_managed(path):
+    """chezmoi would write its own version back over a change of ours."""
+    chezmoi = shutil.which("chezmoi")
+    try:
+        return bool(chezmoi) and subprocess.run([chezmoi, "source-path", path], capture_output=True,
+                                                timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def setup_commands(on, brief=False):
+    """"Lange Befehle melden": one marked line that loads lib/long-commands.sh
+    in each shell start file while on, none while off. Appended at the end,
+    taken out exactly. A file chezmoi manages stays as it is; the setup
+    names the line to add there. Returns False if the user has to do that.
+    brief: one short line for the island's switch (#169), no backup paths."""
+    script = os.path.join(OMARCHY_CONFIG, "plugins", PLUGIN_ID, "lib/long-commands.sh")
+    script = '"$HOME' + script[len(HOME):] + '"' if script.startswith(HOME + os.sep) else shlex.quote(script)
+    line = f"[ -r {script} ] && . {script}"
+    block = f"{TOML_START}\n{line}\n{TOML_END}"
+    marked = re.compile(rf"(\n?)^{re.escape(TOML_START)}$.*?^{re.escape(TOML_END)}$(\n?)", re.M | re.S)
+    files = rc_files()
+    if on and not files:
+        print(t("setup.commandsNone"))
+    done, names = True, []
+    for path in files:
+        with open(path) as f:
+            text = f.read()
+        if not on:
+            new = marked.sub("", text)
+        elif TOML_START in text:
+            new = marked.sub(lambda m: m.group(1) + block + m.group(2), text, count=1)
+        else:
+            new = text + ("\n" if text.endswith("\n") else "\n\n" if text else "") + block + "\n"
+        name = path.replace(HOME, "~", 1)
+        if new == text:
+            names.append(name)
+            if on and not brief:
+                print(t("setup.commandsSame", file=name))
+        elif chezmoi_managed(path):
+            print(t("setup.commandsChezmoi" if on else "remove.commandsChezmoi", file=name))
+            done = False
+        else:
+            names.append(name)
+            backup = write_text(path, new) or "–"
+            if not brief:
+                print(t("setup.commands" if on else "remove.commands", file=name, backup=backup.replace(HOME, "~", 1)))
+    if brief and (names if on else done):
+        print(t("switch.commands", files=t("and", a=names[0], b=names[1]) if len(names) > 1 else names[0])
+              if on else t("switch.commandsOff"))
+    if not done and on:
+        print(line)  # (the last line: the island's "copy" takes it)
+    return done
+
+
+# ----------------------------------------------------- links and timer
+
+def setup_links(remove, files_only):
+    """True if a link changed (another checkout, ./install.sh)."""
+    hook_link = os.path.join(HOOK_DIR, "omarchy-buddy-check")
+    if remove:
+        for name in SCRIPTS:
+            unlink_ours(os.path.join(BIN, name))
+        unlink_ours(hook_link)
+        unlink_ours(BATTERY_HOOK)
+        if not files_only:
+            subprocess.run(["systemctl", "--user", "disable", "--now", UNITS[1]], capture_output=True)
+        for unit in UNITS:
+            unlink_ours(os.path.join(UNIT_DIR, unit))
+        if not files_only:
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        print(t("remove.links"))
+        return False
+    os.makedirs(BIN, exist_ok=True)
+    os.makedirs(HOOK_DIR, exist_ok=True)
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    changed = False
+    for name in SCRIPTS:
+        changed = link(os.path.join(REPO, "bin", name), os.path.join(BIN, name)) or changed
+    link(os.path.join(REPO, "hooks/post-update"), hook_link)
+    os.makedirs(os.path.dirname(BATTERY_HOOK), exist_ok=True)
+    link(os.path.join(REPO, "hooks/battery-low"), BATTERY_HOOK)
+    for unit in UNITS:
+        link(os.path.join(REPO, "systemd", unit), os.path.join(UNIT_DIR, unit))
+    if not files_only:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        subprocess.run(["systemctl", "--user", "enable", "--now", UNITS[1]], capture_output=True)
+    print(t("setup.links", repo=REPO))
+    return changed
+
+
+def update_indicators(files_only):
+    """After an Omarchy update (omarchy-buddy-check): only the indicator list
+    follows Omarchy's current default, and only while the island is set up."""
+    config = read_json(SHELL_JSON)
+    if not isinstance(config, dict) or config.get("version") != 1 \
+            or "omarchy.notifications" not in (config.get("disabledPlugins") or []):
+        return
+    before = json.dumps(config, sort_keys=True)
+    refresh_indicators(config, default_indicators())
+    if json.dumps(config, sort_keys=True) == before:
+        print(t("setup.shellSame"))
+        return
+    print(t("setup.indicators", backup=write_json(SHELL_JSON, config) or "–"))
+    omarchy = shutil.which("omarchy") or os.path.join(OMARCHY, "bin", "omarchy")
+    if not files_only and os.access(omarchy, os.X_OK):
+        subprocess.run([omarchy, "restart", "shell"], capture_output=True)
+
+
+# -------------------------------------------- the agents' switches (#158)
+
+def agent_folders():
+    """Every agent the island's settings can switch (not Claude): its folder."""
+    return {"codex": CODEX_DIR, **{a: v[1] for a, v in {**AGENT_HOOKS, **AGENT_PLUGINS, **CLAUDE_RIDERS}.items()}}
+
+
+def agent_name(agent):
+    return "Codex" if agent == "codex" else {**AGENT_HOOKS, **AGENT_PLUGINS, **CLAUDE_RIDERS}[agent][0]
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path.startswith(HOME + os.sep) else path
+
+
+def planned():
+    """What the full setup changes on this system, for the question before
+    it (#208): only the files of agents that are there and on."""
+    files = [t("setup.askLinks", bin=tilde(BIN), hooks=tilde(os.path.dirname(HOOK_DIR)), units=tilde(UNIT_DIR))]
+    if os.path.isdir(os.path.dirname(SETTINGS)):
+        files.append(tilde(SETTINGS))
+    on = [a for a, folder in agent_folders().items() if os.path.isdir(folder) and not buddy.agent_off(a)]
+    if "codex" in on:
+        files.append(f"{tilde(CODEX_HOOKS)}, {tilde(CODEX_CONFIG)}")
+    files += [tilde(os.path.join(v[1], v[2])) for a, v in {**AGENT_HOOKS, **AGENT_PLUGINS}.items() if a in on]
+    if buddy.config().get("longCommands") is True:
+        files += [tilde(p) for p in rc_files()]
+    return files + [tilde(SHELL_JSON)]
+
+
+def agreed():
+    """Asked once, Yes preselected, with gum as Omarchy asks (else a plain
+    line). True: go on."""
+    print(t("setup.ask"))
+    print("".join(f"  {f}\n" for f in planned()), flush=True)
+    if shutil.which("gum"):
+        return subprocess.run(["gum", "confirm", t("setup.continue"), "--affirmative", t("setup.yes"),
+                               "--negative", t("setup.no")]).returncode == 0
+    try:
+        answer = input(f"{t('setup.continue')} [{t('setup.yes')[0]}/{t('setup.no')[0].lower()}] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer[:1] in ("", "j", "y")
+
+
+def setup_one(agent, remove):
+    """One agent's hooks or plugin in or out (Grok and Cursor: nothing)."""
+    if agent == "codex":
+        setup_codex(remove)
+    elif agent in AGENT_HOOKS:
+        setup_agent(agent, remove)
+    elif agent in AGENT_PLUGINS:
+        setup_plugin(agent, remove)
+
+
+def main():
+    args = sys.argv[1:]
+    usage = ("omarchy-buddy-setup [--yes | --remove | --uninstall | --indicators | --commands on|off | --agents | --agent NAME on|off"
+             " | --weather on|off | --bar [on|off]]")
+    if args[:1] in (["-h"], ["--help"]):
+        print(usage)
+        return
+    switch = [a for a in args if a != "--files-only"]
+    if switch == ["--agents"]:  # the island's settings and "Agents" before the first session: the agents that are there, one per line
+        print("\n".join(a for a, folder in {"claude": os.path.dirname(SETTINGS), **agent_folders()}.items() if os.path.isdir(folder)))
+        return
+    if switch[:1] == ["--agent"] and len(switch) == 3 and switch[1] in agent_folders() and switch[2] in ("on", "off"):
+        # The island's switch (it writes config.json itself): says something only
+        # when a file of the agent's stopped it, then that is the page's note.
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            setup_one(switch[1], switch[2] == "off")
+        if ODD:
+            print(said.getvalue(), end="")
+        sys.exit(2 if ODD else 0)
+    if switch[:1] == ["--weather"] and switch[1:] in (["on"], ["off"]):  # the island's switch (#184)
+        config, _ = shell_switch(lambda c, r: set_weather(c, r, switch[1] == "on"))
+        sys.exit(0 if config is not None else 2)
+    if switch[:1] == ["--bar"] and switch[1:] in ([], ["on"], ["off"]):  # "Leiste ordnen" (#184)
+        config, record = shell_switch(switch[1:] and (lambda c, r: arrange_bar(c, r, switch[1] == "on")))
+        if config is None:
+            sys.exit(2)
+        print(bar_state(config, record))
+        return
+    if switch[:1] == ["--commands"] and switch[1:] in (["on"], ["off"]):  # the island's switch
+        sys.exit(0 if setup_commands(switch[1] == "on", brief=True) else 2)
+    unknown = [a for a in args if a not in ("--remove", "--uninstall", "--files-only", "--indicators", "--yes")]
+    if unknown:
+        sys.exit(f"omarchy-buddy-setup: {' '.join(unknown)}?  {usage}")
+    if "--indicators" in args:
+        update_indicators("--files-only" in args)
+        return
+    uninstall = "--uninstall" in args
+    remove = "--remove" in args or uninstall
+    files_only = "--files-only" in args
+    # Read first: a broken file stops here, before anything has changed.
+    read_json(SETTINGS)
+    read_json(CODEX_HOOKS)
+    read_json(SHELL_JSON)
+    # The full setup asks first where someone can answer (#208); a No changes nothing.
+    if not remove and "--yes" not in args and sys.stdin.isatty() and not agreed():
+        print(t("setup.cancelled", setup=tilde(os.path.join(REPO, "bin/omarchy-buddy-setup"))))
+        sys.exit(1)
+    changed = setup_links(remove, files_only)
+    setup_claude(remove)
+    off = [a for a in agent_folders() if buddy.agent_off(a)]
+    for agent in agent_folders():
+        setup_one(agent, remove or agent in off)
+    if MISSING:
+        print(t("setup.agentsNone", agents=", ".join(MISSING)))
+    if off and not remove:
+        print(t("setup.agentsOff", agents=", ".join(agent_name(a) for a in off)))
+    setup_commands(not remove and buddy.config().get("longCommands") is True)
+    changed = setup_shell(remove) or changed
+    # (started from the island, PATH can lack Omarchy's bin)
+    omarchy = shutil.which("omarchy") or os.path.join(OMARCHY, "bin", "omarchy")
+    failed = False
+    if uninstall and not files_only:
+        # Unloads the island while the shell still runs (the restart below
+        # brings Omarchy's notifications back); for a cloned plugin this
+        # deletes the folder this script lives in, so nothing of ours runs after.
+        try:
+            r = subprocess.run([omarchy, "plugin", "remove", PLUGIN_ID, "--yes"], capture_output=True, text=True)
+            failed, error = r.returncode != 0, r.stderr.strip()
+        except OSError as e:
+            failed, error = True, str(e)
+        print(error if failed else t("remove.plugin"))
+    # A second setup with nothing new leaves the shell (pop-ups, bar) alone.
+    if (changed or uninstall) and not files_only and os.access(omarchy, os.X_OK):
+        subprocess.run([omarchy, "restart", "shell"], capture_output=True)
+        print(t("setup.restart"))
+    if failed:
+        sys.exit(1)  # the island's button says so
+    print(t("uninstall.done" if uninstall else "remove.done" if remove else "setup.done",
+            state=buddy.STATE_DIR, config=buddy.CONFIG_DIR))
+
+
+if __name__ == "__main__":
+    main()

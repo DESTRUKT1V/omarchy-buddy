@@ -1,0 +1,14 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "turn_id": "00000000-0000-4000-8000-000000000002",
+  "transcript_path": "/home/user/.codex/sessions/2026/10/30/rollout-2026-10-30T12-40-15-00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat notiz.txt"
+  },
+  "tool_use_id": "call_1"
+}

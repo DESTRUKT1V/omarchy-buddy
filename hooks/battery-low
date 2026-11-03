@@ -1,0 +1,12 @@
+#!/bin/bash
+# Omarchy battery-low hook ($1: percent left); the setup links it to
+# ~/.config/omarchy/hooks/battery-low.d/omarchy-buddy. Omarchy calls it right
+# after its own "Time to recharge!" pop-up, which leaves nothing in the
+# island's history: the warning goes there, without a second pop-up.
+# Without a battery Omarchy never calls it.
+
+[[ ${1-} =~ ^[0-9]+$ ]] || exit 0
+repo=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/..
+"$repo/bin/omarchy-buddy-say" --source system --level warn --quiet \
+  "$(python3 "$repo/lib/texts.py" battery.low percent="$1")" "$(python3 "$repo/lib/texts.py" battery.low.body)" >/dev/null 2>&1
+exit 0

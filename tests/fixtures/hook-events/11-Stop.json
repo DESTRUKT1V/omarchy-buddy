@@ -1,0 +1,23 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Schritt 3 läuft jetzt als Hintergrund-Subagent. Ich warte auf dessen Ergebnis, bevor ich Schritt 4 (`rm notiz.txt`) selbst ausführe, damit wir nicht parallel dieselbe Datei löschen.\n\nBisher: `notiz.txt` gelesen (Inhalt: „hallo“), `cat fehlt.txt` fehlgeschlagen (Datei existiert nicht), Subagent zum Löschen gestartet.",
+  "background_tasks": [
+    {
+      "id": "agent0001",
+      "type": "subagent",
+      "status": "running",
+      "description": "Delete notiz.txt",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}

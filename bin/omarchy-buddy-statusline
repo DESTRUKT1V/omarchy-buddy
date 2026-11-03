@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+# Claude Code's status line, with a copy of the usage numbers for the island.
+#
+# Only the status line gets the rate limits (rate_limits.five_hour /
+# seven_day: used_percentage, resets_at) and each session's context window;
+# no hook does. This script keeps the newest numbers in
+# $XDG_RUNTIME_DIR/omarchy-buddy/usage.json, the limits per Claude account
+# ("limits" for the main one, "accounts" → its CLAUDE_CONFIG_DIR → "limits"
+# for further ones, Omarchy 4.5), warns once per limit window via
+# omarchy-buddy-say when a limit passes "limitWarn" from
+# ~/.config/omarchy-buddy/config.json (default 80 %, 0: never; ui.json held
+# it before the island moved it there), and runs the status line the user had before
+# (omarchy-buddy-setup saved it in ~/.local/state/omarchy-buddy/statusline.json)
+# with the same input; its output goes straight through. Whatever goes wrong
+# here, the status line itself still runs.
+
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+import buddy  # noqa: E402
+from texts import t, clock  # noqa: E402
+
+DIR = buddy.RUN_DIR
+USAGE = os.path.join(DIR, "usage.json")
+INNER = os.path.join(buddy.STATE_DIR, "statusline.json")
+UI = os.path.join(buddy.STATE_DIR, "ui.json")
+CONFIG = buddy.CONFIG
+WARN_DEFAULT = 80
+SESSION_KEEP = 6 * 3600
+WINDOWS = ("five_hour", "seven_day")
+
+
+def epoch(value):
+    """resets_at as Unix seconds; older versions sent ISO-8601 text."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def percent(value):
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def read_limits(data):
+    """{"five_hour": {"used": 42.0, "resets": 1730000000.0}, …}, only windows Claude sent."""
+    limits = {}
+    raw = data.get("rate_limits") if isinstance(data.get("rate_limits"), dict) else {}
+    for name in WINDOWS:
+        window = raw.get(name)
+        used = percent(window.get("used_percentage")) if isinstance(window, dict) else None
+        if used is not None:
+            limits[name] = {"used": round(used, 1), "resets": epoch(window.get("resets_at"))}
+    return limits
+
+
+def read_context(data):
+    window = data.get("context_window") if isinstance(data.get("context_window"), dict) else {}
+    used = percent(window.get("used_percentage"))
+    return None if used is None else round(used)
+
+
+def warn_threshold():
+    for path in (CONFIG, UI):
+        try:
+            with open(path) as f:
+                value = json.load(f).get("limitWarn")
+            if value is not None:
+                return max(0.0, min(100.0, float(value)))  # as the island reads it
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    return WARN_DEFAULT
+
+
+def warnings(limits, warned, threshold, now, account=""):
+    """(key, title, body) for every window that just passed the threshold;
+    each window (name + reset time in 10-minute steps, where Claude puts
+    them; the reset time can wobble by a few seconds between calls) warns
+    once."""
+    if threshold <= 0:
+        return []
+    found = []
+    for name, window in limits.items():
+        key = (account + "|" if account else "") + f"{name}-{round(window['resets'] / 600)}"
+        if window["used"] < threshold or key in warned:
+            continue
+        body = t("free.at", time=clock(window["resets"])) if window["resets"] > now else ""
+        found.append((key, t("limit.warn", limit=t("limit." + name), percent=round(window["used"])), body))
+    return found
+
+
+def merge(usage, data, now, threshold, account=""):
+    """usage.json with this status line's numbers (`account`:
+    buddy.claude_account()); returns the new content and the warnings to send."""
+    usage = dict(usage) if isinstance(usage, dict) else {}
+    limits = read_limits(data)
+    if limits and account:
+        accounts = dict(usage.get("accounts") or {})
+        accounts[account] = {"limits": dict(buddy.account_limits(usage, account), **limits)}
+        usage["accounts"] = accounts
+    elif limits:
+        usage["limits"] = dict(usage.get("limits") or {}, **limits)
+    sessions = {sid: s for sid, s in (usage.get("sessions") or {}).items()
+                if isinstance(s, dict) and now - float(s.get("updated") or 0) < SESSION_KEEP}
+    session_id = str(data.get("session_id") or "")
+    context = read_context(data)
+    if session_id and context is not None:
+        old = sessions.get(session_id) or {}
+        sessions[session_id] = {"context": context,
+                                "updated": old.get("updated", now) if old.get("context") == context else now}
+    usage["sessions"] = sessions
+    found = warnings(buddy.account_limits(usage, account), set(usage.get("warned") or []), threshold, now, account)
+    if found:
+        usage["warned"] = ((usage.get("warned") or []) + [k for k, _, _ in found])[-20:]
+    return usage, found
+
+
+def record(raw):
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return
+    if not isinstance(data, dict):
+        return
+    buddy.private_dir(DIR)
+    now = time.time()
+    with buddy.private_open(os.path.join(DIR, "usage.lock")) as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(USAGE) as f:
+                before = json.load(f)
+        except (OSError, ValueError):
+            before = {}
+        usage, found = merge(before, data, now, warn_threshold(), buddy.claude_account())
+        # The status line runs often; the island only hears of real changes.
+        if usage != before:
+            buddy.save_json(USAGE, usage)
+    for key, title, body in found:
+        subprocess.Popen([buddy.SAY, "--source", "claude", "--level", "warn", "--key", "limit-" + key, title, body],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+
+
+def inner_command():
+    try:
+        with open(INNER) as f:
+            command = json.load(f).get("command")
+        return command if isinstance(command, str) and command.strip() else ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def main():
+    raw = sys.stdin.buffer.read()
+    command = inner_command()
+    inner = None
+    if command:
+        # Its output goes straight to Claude; it runs while we take notes.
+        inner = subprocess.Popen(command, shell=True, stdin=subprocess.PIPE)
+        try:
+            inner.stdin.write(raw)
+            inner.stdin.close()
+        except OSError:
+            pass
+    try:
+        record(raw.decode("utf-8", "replace"))
+    except Exception as e:  # never break the status line
+        print(f"omarchy-buddy-statusline: {e}", file=sys.stderr)
+    if inner:
+        try:
+            inner.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            inner.kill()
+        sys.exit(inner.returncode or 0)
+
+
+if __name__ == "__main__":
+    main()

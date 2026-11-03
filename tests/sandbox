@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Runs a command in a fresh sandbox HOME: HOME and every XDG folder point
+# into a new temporary folder, which is gone afterwards. Then checks that
+# the agents' and the buddy's files in the real HOME are unchanged, and
+# says so loudly if not (exit 70). Otherwise exits with the command's status.
+#
+#   tests/sandbox bin/omarchy-buddy-setup --files-only
+#   tests/sandbox bash -c 'bin/omarchy-buddy-setup --files-only && cat "$HOME/.gemini/settings.json"'
+#
+# The command gets its arguments as they are (no word splitting, unlike
+# `env $VARS …` in zsh, which twice ran a setup on the real ~/.config).
+set -uo pipefail
+[ $# -gt 0 ] || { echo "usage: tests/sandbox COMMAND [ARG …]" >&2; exit 2; }
+
+real=$(getent passwd "$(id -un)" | cut -d: -f6)
+box=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-buddy-sandbox-XXXXXX") || exit 1
+trap 'rm -rf "$box"' EXIT
+mark=$box/.mark
+touch "$mark"
+mkdir -p "$box/.config" "$box/.local/share" "$box/.local/state" "$box/.cache" "$box/run"
+chmod 700 "$box/run"
+
+HOME=$box XDG_CONFIG_HOME=$box/.config XDG_DATA_HOME=$box/.local/share \
+  XDG_STATE_HOME=$box/.local/state XDG_CACHE_HOME=$box/.cache XDG_RUNTIME_DIR=$box/run \
+  "$@"
+status=$?
+
+# What a setup or hook run could touch in the real HOME (not ~/.claude as a
+# whole or the buddy's state: running agents write there all the time).
+watch=(.claude/settings.json .config/omarchy/shell.json .config/omarchy-buddy .local/bin
+       .codex/hooks.json .codex/config.toml .gemini/settings.json .gemini/config .config/crush
+       .copilot/hooks .config/opencode/plugins .pi/agent/extensions .omp/agent/extensions
+       .qwen/settings.json .config/devin .kimi-code .commandcode .kiro/hooks .hermes .bashrc .zshrc .config/zsh
+       .config/kilo .config/amp .openclaw .config/muse)
+touched=$(cd "$real" && find "${watch[@]}" -maxdepth 2 -newer "$mark" 2>/dev/null)
+if [ -n "$touched" ]; then
+  {
+    echo
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "!! tests/sandbox: changed in the REAL home ($real) during the run:"
+    printf '!!   ~/%s\n' $touched
+    echo "!! (or something else changed them meanwhile) – check and restore them."
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  } >&2
+  exit 70
+fi
+exit $status

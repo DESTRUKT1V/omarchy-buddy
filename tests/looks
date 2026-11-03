@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# The island's look (#182, direction D of #181) as screenshots: O-Morchy as
+# a widget in a mock of Omarchy's bar beside the clock (the real
+# BarWidget.qml), the island under it as an Omarchy pop-up. Per variant:
+# the bar (an agent at work, news unread; then singing), peek, a pop-up, a request, the
+# open view and the settings page (also with "Quellen" unfolded); in the theme and a light one, each with a
+# transparent and a full bar; then the bar at the bottom and on the left, and
+# a theme with rounded corners (Style.cornerRadius 10, to see the inside follow).
+#
+# Runs this checkout's shell/ in its own Quickshell, with HOME, every XDG
+# folder and the D-Bus session its own (only the Wayland and Hyprland
+# sockets and Omarchy's theme are linked in), over the wallpaper and the
+# mock bar (tests/looks.qml). The running island, its history and settings
+# stay as they are.
+#
+#   tests/looks DIR      (e.g. fotos/182-looks)
+#   tests/looks DIR wetter   only the weather (#184): the tile beside the open
+#                        view with and without music, in the theme and a light
+#                        one, dry, rain, warning, abroad, loading, failed, no
+#                        place, the bar with rain and a warning, the severe
+#                        warning's pop-up (#189), the tile down to a short
+#                        and a long open view (#190), the bar at the bottom
+#                        with the hours ahead where there is room (#191)
+#                        (set weather, nothing fetched)
+#   tests/looks DIR start    only the first minutes (#192): the setup's offer
+#                        (no setup.json yet), the greeting after the first
+#                        setup, its test pop-up and "Agents" before the first
+#                        session, in the theme and a light one
+#   LOOKS_LANG=en tests/looks DIR …   the texts in English (default German)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start ) ) ]] || { sed -n '2,29p' "$0"; exit 1; }
+mode=${2-}
+out=$(realpath -m "$1")
+mkdir -p "$out"
+
+real_run=$XDG_RUNTIME_DIR
+box=$(mktemp -d)
+qs=$box/qs
+pid="" dbus="" asker="" music=""
+cleanup() {
+  trap - EXIT INT TERM
+  [[ -n $asker ]] && kill "$asker" 2>/dev/null
+  [[ -n $music ]] && kill "$music" 2>/dev/null
+  [[ -n $pid ]] && kill "$pid" 2>/dev/null
+  [[ -n $dbus ]] && kill "$dbus" 2>/dev/null
+  wait 2>/dev/null
+  rm -rf "$box"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$box/home/.config" "$box/home/.local/share" "$box/home/.local/state" "$box/home/.cache" "$box/run" "$qs"
+chmod 700 "$box/run"
+ln -s "$real_run/$WAYLAND_DISPLAY" "$box/run/$WAYLAND_DISPLAY"
+ln -s "$real_run/hypr" "$box/run/hypr"
+ln -s "$HOME/.local/state/omarchy" "$box/home/.local/state/omarchy"  # the theme, read only
+[[ -d $HOME/.config/fontconfig ]] && ln -s "$HOME/.config/fontconfig" "$box/home/.config/fontconfig"
+ln -s "${OMARCHY_PATH:-/usr/share/omarchy}/shell/Commons" "$qs/Commons"
+ln -s "${OMARCHY_PATH:-/usr/share/omarchy}/shell/Ui" "$qs/Ui"
+ln -s "$PWD/shell" "$qs/buddy"
+ln -s "$PWD/bin" "$qs/bin"
+cp tests/looks.qml "$qs/shell.qml"
+mkdir -p "$box/home/.config/omarchy-buddy" "$box/home/.config/omarchy"
+echo "{\"language\": \"${LOOKS_LANG:-de}\", \"weather\": $([[ $mode == wetter ]] && echo true || echo false)}" >"$box/home/.config/omarchy-buddy/config.json"
+# As after the setup: Omarchy's notifications off, so the island serves them (#187),
+# and its record (only "start" begins before the setup, #192; Claude and Codex
+# installed, for "Agents" before the first session).
+echo '{"version": 1, "disabledPlugins": ["omarchy.notifications"]}' >"$box/home/.config/omarchy/shell.json"
+mkdir -p "$box/home/.local/state/omarchy-buddy"
+if [[ $mode == start ]]; then mkdir -p "$box/home/.claude" "$box/home/.codex"
+else echo '{}' >"$box/home/.local/state/omarchy-buddy/setup.json"; fi
+# The weather's settings offer to arrange Omarchy's bar with the widget beside the clock (#184).
+[[ $mode == wetter ]] && jq '.bar.layout.center |= (map(select(.id != "omarchy.weather")) | (map(.id) | index("omarchy.clock")) as $c | .[:$c + 1] + [{id: "io.github.destrukt1v.omarchy-buddy"}] + .[$c + 1:])
+  | .disabledPlugins = ["omarchy.notifications"]' "${OMARCHY_PATH:-/usr/share/omarchy}/config/omarchy/shell.json" >"$box/home/.config/omarchy/shell.json"
+
+# A demo first name for the greeting (#197): Buddy.qml reads it with getent, so
+# this sandbox's getent answers for a made-up user, never the real one.
+mkdir -p "$box/bin"
+printf '#!/bin/sh\necho "alex:x:1000:1000:Alex Demo:/home/alex:/bin/bash"\n' >"$box/bin/getent"
+chmod +x "$box/bin/getent"
+export PATH=$box/bin:$PATH
+
+export LOOKS_WALLPAPER
+LOOKS_WALLPAPER=$(readlink -f "$HOME/.local/state/omarchy/current/background")
+export HOME=$box/home XDG_CONFIG_HOME=$box/home/.config XDG_DATA_HOME=$box/home/.local/share \
+  XDG_STATE_HOME=$box/home/.local/state XDG_CACHE_HOME=$box/home/.cache XDG_RUNTIME_DIR=$box/run
+# A bus that starts no services: the default session bus would start a second
+# xdg-desktop-portal(-hyprland) for Qt, which crashes beside the real one.
+cat >"$box/bus.conf" <<EOF
+<busconfig><type>session</type><listen>unix:tmpdir=$box</listen>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>
+EOF
+{ read -r DBUS_SESSION_BUS_ADDRESS; read -r dbus; } < <(dbus-daemon --config-file="$box/bus.conf" --fork --print-address=1 --print-pid=1)
+export DBUS_SESSION_BUS_ADDRESS OMARCHY_BUDDY_LOOKS=1
+# Started from an Orca terminal, the hook would see Orca and every request
+# would offer "Zu Orca"; a tester runs Claude in a terminal ("Zum Fenster").
+unset "${!ORCA_@}"
+
+quickshell -p "$qs" >"$box/log" 2>&1 &
+pid=$!
+
+ipc() { quickshell ipc -p "$qs" call "$@" 2>/dev/null; }
+probe() { ipc omarchy-buddy.test "$@"; }
+for _ in $(seq 50); do [[ $(probe ping) == ok ]] && break; sleep 0.2; done
+if [[ $(probe ping) != ok ]]; then
+  echo "Die Vorschau startet nicht:" >&2; tail -20 "$box/log" >&2; exit 2
+fi
+
+# The demo data in the language of the pictures (#197: English for the README).
+L() { [[ ${LOOKS_LANG:-de} == en ]] && echo "$2" || echo "$1"; }
+
+# Something to show: a Codex session at work and per round an unread news
+# item (the open view reads it) and a notification (pop-up, then listed).
+[[ $mode == start ]] || jq -nc --arg p "$(L "Räum die Tests auf" "Tidy up the tests")" '{session_id: "looks-1", cwd: "/tmp/insel", hook_event_name: "UserPromptSubmit", prompt: $p}' |
+  bin/omarchy-buddy-hook --codex >/dev/null
+news=$XDG_STATE_HOME/omarchy-buddy/news.json
+round=0
+no_news() { echo '[]' >"$news.tmp" && mv "$news.tmp" "$news"; }
+fresh_news() {
+  round=$((round + 1))
+  no_news
+  bin/omarchy-buddy-say --source coding --level good --quiet --key "looks-$round" "$(L "Tests grün" "Tests green")" "omarchy-buddy: 42 $(L bestanden passed)"
+}
+note() {  # [n: another sender, for a long list]
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- Buddy-Test 0 "" "Lea Sommer${1:+ $1}" \
+    "$(L "Die Bilder für Freitag sind da, schau mal rein." "The pictures for Friday are in, take a look.")" "[]" "{'urgency': <byte 1>}" -1 >/dev/null
+}
+
+# A Claude request through the real hook (it waits in the background until decided).
+ask() {
+  jq -nc --arg d "$(L "Build-Ordner leeren" "Empty the build folder")" '{session_id: "looks-ask", cwd: "/tmp/insel", hook_event_name: "PermissionRequest", tool_name: "Bash",
+           tool_input: {command: "rm -rf build/", description: $d}}' | bin/omarchy-buddy-hook >/dev/null 2>&1 &
+  asker=$!
+}
+unask() {
+  bin/omarchy-buddy-hook --decide looks-ask deny >/dev/null 2>&1 || true
+  wait "$asker" 2>/dev/null || true; asker=""
+  jq -nc '{session_id: "looks-ask", cwd: "/tmp/insel", hook_event_name: "SessionEnd"}' | bin/omarchy-buddy-hook >/dev/null
+}
+
+# The screen area: around the widget for the bar alone, otherwise the
+# island's surface (with the bar at its edge), in the layout's coordinates.
+shot() {  # name [bar]
+  sleep 1.2
+  local sx sy sw sh wx wy ww wh left top w h g
+  read -r sx sy sw sh wx wy ww wh left top < <(ipc omarchy-buddy.looks geometry)
+  read -r w h < <(probe layout | jq -r '"\(.window.w) \(.window.h)"')
+  if [[ ${2-} == bar ]]; then
+    case $edge in
+      top) g="$((sx + wx + ww / 2 - 300)),$sy 600x70" ;;
+      bottom) g="$((sx + wx + ww / 2 - 300)),$((sy + sh - 70)) 600x70" ;;
+      left) g="$sx,$((sy + wy - 60)) 220x$((wh + 120))" ;;
+    esac
+  else
+    case $edge in
+      top) g="$((sx + left)),$sy ${w}x$h" ;;
+      bottom) g="$((sx + left)),$((sy + sh - h)) ${w}x$h" ;;
+      left) g="$sx,$((sy + top)) ${w}x$h" ;;
+    esac
+  fi
+  grim -g "$g" "$out/$1.png"
+}
+
+# Until O-Morchy's emote (the request's "!") has run out (at most 4 s).
+calm() {
+  for _ in $(seq 40); do [[ $(probe state | jq -r .emote) == "" ]] && return; sleep 0.1; done
+}
+
+variant() {  # name
+  local name=$1
+  ipc omarchy-buddy close >/dev/null; probe testPeek false >/dev/null; fresh_news
+  shot "$name-1-leiste" bar
+  probe testEmote sing >/dev/null; shot "$name-1-leiste-singt" bar; probe testEmote "" >/dev/null
+  probe testPeek true >/dev/null; shot "$name-2-peek"; probe testPeek false >/dev/null
+  note; shot "$name-3-popup"
+  probe testForget >/dev/null; sleep 0.5
+  ask; sleep 1; shot "$name-4-anfrage"; shot "$name-4-anfrage-leiste" bar; unask
+  calm
+  ipc omarchy-buddy open >/dev/null; shot "$name-5-gross"
+  probe testSettingsPage true >/dev/null; shot "$name-6-einstellungen"
+  probe testScrollTo "Quellen" >/dev/null; probe testClick "Quellen" >/dev/null; sleep 0.3; probe testScrollTo "GitHub" >/dev/null; shot "$name-6-einstellungen-quellen"
+  probe testSettingsPage false >/dev/null
+  # Out of the history again; wait out its "Rückgängig", or the next open view shows it.
+  ipc omarchy-buddy close >/dev/null; probe testForget >/dev/null; sleep 8.5
+}
+
+light='{"foreground": "#575279", "background": "#faf4ed", "accent": "#56949f", "urgent": "#b4637a"}'
+colors() { probe testColors "$([[ $1 == hell ]] && echo "$light")" >/dev/null; }  # dunkel | hell
+
+# The player window beside the open view (tests/fake-player).
+music_on() { tests/fake-player --title "Wetterleuchten" --artist "Die Testband" --cover >/dev/null 2>&1 & music=$!; sleep 1.5; }
+music_off() { if [[ -n $music ]]; then kill "$music" 2>/dev/null; wait "$music" 2>/dev/null || true; music=""; sleep 1; fi; }
+
+# The weather as Weather.qml would hold it, times in seconds from now (Probe.testWeather).
+scene() {  # name
+  python3 - "$1" <<'PY'
+import json, sys, time
+name = sys.argv[1]
+def radar(values, step=300):
+    return {"step": step, "frames": [{"t": -60 + i * step, "mmh": v} for i, v in enumerate(values)]}
+dry = radar([0] * 24)
+wet = radar([0] * 5 + [0.2, 0.6, 1.2, 2.4, 3.6, 4.2, 3.1, 2.2, 1.4, 0.8, 0.4, 0.15] + [0] * 7)
+pour = radar([3.5, 4.6, 5, 4.1, 3.2, 2.6, 1.8, 1.2, 0.9, 0.6, 0.4, 0.2] + [0] * 12)
+def hours(temps, icons):  # the full hours from the next one on (#191)
+    first = 3600 - time.time() % 3600
+    return [{"t": first + i * 3600, "temp": t, "icon": c} for i, (t, c) in enumerate(zip(temps, icons))]
+base = {"place": "Aachen", "temp": 12.4, "icon": "partly-cloudy-day", "feels": 10.8, "high": 14.2, "low": 6.1,
+        "rain": dry, "alerts": [], "time": -240,
+        "hours": hours([12, 11, 10, 9, 8, 7, 7], ["partly-cloudy-day", "cloudy", "cloudy", "partly-cloudy-night", "clear-night", "clear-night", "fog"])}
+data = {
+  "trocken": base,
+  "regen": dict(base, temp=8.6, icon="cloudy", feels=6.2, high=9.3, low=3.7, rain=wet),
+  "warnung": dict(base, temp=21.3, icon="thunderstorm", feels=22.0, high=26.8, low=15.2, rain=pour,
+      hours=hours([20, 18, 17, 16, 15, 14, 14], ["thunderstorm", "rain", "rain", "cloudy", "partly-cloudy-night", "clear-night", "clear-night"]), alerts=[
+      {"level": 3, "event": {"de": "Schwere Gewitter", "en": "Severe thunderstorms"}, "onset": -1800, "expires": 7200},
+      {"level": 2, "event": {"de": "Starkregen", "en": "Heavy rain"}, "onset": 3600, "expires": 14400}]),
+  "ausland": dict(base, place="Paris", temp=13.0, icon="clear-night", feels=11.4, high=15.1, low=7.9,
+                  rain=radar([0, 0, 0, 0.4, 0.8, 0.4, 0, 0], 900), alerts=None),
+}
+states = {"laden": {}, "fehler": {"failed": True}, "kein-ort": {"placeFailed": True},
+          "offline": {"failed": True, "data": dict(base, time=-5400)}}
+out = states[name] if name in states else {"data": data[name]}
+print(json.dumps(out))
+PY
+}
+weather_looks() {
+  # Nothing at work: the bar has room for the weather.
+  jq -nc '{session_id: "looks-1", cwd: "/tmp/insel", hook_event_name: "SessionEnd"}' | bin/omarchy-buddy-hook --codex >/dev/null
+  edge=top
+  ipc omarchy-buddy.looks bar true >/dev/null
+  for theme in dunkel hell; do
+    colors "$theme"
+    for w in regen warnung; do
+      ipc omarchy-buddy close >/dev/null; probe testWeather "$(scene $w)" >/dev/null
+      shot "wetter-$theme-leiste-$w" bar
+    done
+    # The severe warning pops up and goes into the news (#189).
+    probe testWeather "$(scene warnung | jq -c '.tell = true')" >/dev/null
+    sleep 1; shot "wetter-$theme-unwetter-popup"
+    for m in ohne mit; do
+      [[ $m == mit ]] && music_on
+      ipc omarchy-buddy open >/dev/null
+      for w in trocken regen warnung ausland offline laden fehler kein-ort; do
+        [[ $m == mit && $w =~ ^(ausland|offline|laden|fehler|kein-ort)$ ]] && continue
+        probe testWeather "$(scene $w)" >/dev/null
+        shot "wetter-$theme-${m}-musik-$w"
+      done
+      if [[ $m == ohne ]]; then
+        probe testSettingsPage true >/dev/null; sleep 1; probe testScrollTo "Omarchy-Wetter ersetzen" >/dev/null
+        shot "wetter-$theme-einstellungen"; probe testSettingsPage false >/dev/null
+      fi
+      ipc omarchy-buddy close >/dev/null
+      music_off
+    done
+  done
+  # The tile down to the open view's bottom edge (#190): a short open view
+  # (nothing new) and a long one (six notifications, three news items).
+  for theme in dunkel hell; do
+    colors "$theme"
+    for m in ohne mit; do
+      [[ $m == mit ]] && music_on
+      for len in kurz lang; do
+        ipc omarchy-buddy close >/dev/null; probe testForget >/dev/null
+        no_news
+        if [[ $len == lang ]]; then
+          for i in 1 2 3 4 5 6; do note "$i"; done
+          for i in 1 2 3; do bin/omarchy-buddy-say --source coding --level good --quiet --key "looks-lang-$i" "$(L "Tests grün" "Tests green")" "omarchy-buddy: 4$i $(L bestanden passed)"; done
+        fi
+        sleep 1; ipc omarchy-buddy open >/dev/null
+        probe testWeather "$(scene warnung)" >/dev/null
+        shot "wetter-$theme-buendig-${m}-musik-$len"
+      done
+      ipc omarchy-buddy close >/dev/null
+      music_off
+    done
+  done
+  probe testForget >/dev/null
+  # The bar at the bottom: the weather further from it, above the player.
+  colors dunkel
+  edge=bottom
+  ipc omarchy-buddy.looks edge bottom >/dev/null
+  for m in ohne mit; do
+    [[ $m == mit ]] && music_on
+    ipc omarchy-buddy open >/dev/null
+    probe testWeather "$(scene warnung)" >/dev/null
+    shot "wetter-dunkel-unten-${m}-musik"
+    ipc omarchy-buddy close >/dev/null
+    music_off
+  done
+}
+# The first minutes (#192), over a transparent bar.
+start_looks() {
+  edge=top
+  local theme
+  ipc omarchy-buddy.looks bar false >/dev/null
+  for theme in dunkel hell; do
+    colors "$theme"
+    shot "start-$theme-einrichten"
+  done
+  # As the first setup leaves it; the island looks for the file every 5 s.
+  echo "{\"since\": $(date +%s)}" >"$XDG_STATE_HOME/omarchy-buddy/setup.json"
+  for _ in $(seq 100); do [[ $(probe state | jq -r '.toast.title // ""') == @(Hallo|Hi)* ]] && break; sleep 0.1; done
+  for theme in dunkel hell; do
+    colors "$theme"
+    shot "start-$theme-begruessung"
+  done
+  [[ $(probe testClick "$(L "Probier’s aus" "Try it")") == ok ]] || echo "„$(L "Probier’s aus" "Try it")“ nicht gefunden" >&2
+  shot "start-hell-probe"
+  ipc omarchy-buddy open >/dev/null
+  for theme in hell dunkel; do
+    colors "$theme"
+    shot "start-$theme-leer-agents"
+  done
+}
+# Every variant of the island (no mode given).
+all_looks() {
+  edge=top
+  for theme in dunkel hell; do
+    colors "$theme"
+    for bar in durchsichtig voll; do
+      ipc omarchy-buddy.looks bar "$([[ $bar == voll ]] && echo true || echo false)" >/dev/null
+      variant "$theme-leiste-$bar"
+    done
+  done
+  colors dunkel
+  ipc omarchy-buddy.looks bar true >/dev/null
+  for edge in bottom left; do
+    ipc omarchy-buddy.looks edge "$edge" >/dev/null
+    variant "dunkel-leiste-$([[ $edge == bottom ]] && echo unten || echo links)"
+  done
+  edge=top
+  ipc omarchy-buddy.looks edge top >/dev/null
+  ipc omarchy-buddy.looks radius 10 >/dev/null
+  variant "dunkel-rund"
+}
+case $mode in wetter) weather_looks ;; start) start_looks ;; *) all_looks ;; esac
+grep -iE 'error|warn' "$box/log" | grep -v 'portal' >&2 || true
+echo "Fotos in $out"

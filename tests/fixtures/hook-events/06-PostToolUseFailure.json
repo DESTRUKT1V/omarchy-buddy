@@ -1,0 +1,20 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat fehlt.txt",
+    "description": "Show contents of fehlt.txt"
+  },
+  "tool_use_id": "toolu_test0004",
+  "error": "Exit code 1\ncat: fehlt.txt: No such file or directory",
+  "is_interrupt": false,
+  "duration_ms": 119
+}

@@ -1,0 +1,10 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "scratchpad_dir": "/tmp/claude-1000/-home-user-projekt/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "plan",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Frag mich mit dem Werkzeug AskUserQuestion in einem Aufruf zwei Fragen: welche Farbe (Rot oder Blau, eine Auswahl) und welche Tiere (Hund, Katze, Maus; multiSelect true). Schreib dann einen kurzen Plan, eine Datei farben.txt mit meinen Antworten anzulegen, und leg ihn mit ExitPlanMode zur Freigabe vor. Nach der Freigabe setz ihn um und antworte mit einem Satz."
+}

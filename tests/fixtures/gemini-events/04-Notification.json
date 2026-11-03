@@ -1,0 +1,15 @@
+{
+  "session_id": "ec91b074-fc31-4e96-81e6-b3679f698b04",
+  "transcript_path": "/home/user/.gemini/tmp/work/chats/session-2026-10-30T13-37-43c6ef31.jsonl",
+  "cwd": "/home/user/projekt",
+  "hook_event_name": "Notification",
+  "timestamp": "2026-10-30T13:38:03.660Z",
+  "notification_type": "ToolPermission",
+  "message": "Tool Confirm Shell Command requires execution",
+  "details": {
+    "type": "exec",
+    "title": "Confirm Shell Command",
+    "command": "touch neu.txt",
+    "rootCommand": "touch"
+  }
+}

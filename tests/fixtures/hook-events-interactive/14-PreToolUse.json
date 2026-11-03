@@ -1,0 +1,18 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "scratchpad_dir": "/tmp/claude-1000/-home-user-projekt/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "plan",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "ExitPlanMode",
+  "tool_input": {
+    "plan": "# Plan: farben.txt anlegen\n\n## Context\nDer Nutzer hat seine Vorlieben angegeben (Farbe: Rot; Tiere: Hund, Katze). Diese sollen in einer Datei festgehalten werden.\n\n## Schritte\n1. Datei `/home/user/projekt/farben.txt` mit folgendem Inhalt anlegen:\n   ```\n   Farbe: Rot\n   Tiere: Hund, Katze\n   Datum: 2026-10-28\n   ```\n\n## Verifikation\n- Dateiinhalt mit Read prüfen.\n",
+    "planFilePath": "/home/user/.claude/plans/frag-mich-mit-dem-sharded-widget.md"
+  },
+  "tool_use_id": "toolu_test0008"
+}

@@ -1,0 +1,24 @@
+{
+  "quelle": "nach Quelle gebaut: tutao/tutanota src/common/misc/Formatter.ts formatNotificationForDisplay (Titel = Text), Herkunftsabsatz wie Chromium 155",
+  "app": "Chromium",
+  "icon": "",
+  "summary": "14:42 Teammeeting",
+  "body": "app.tuta.com\n\n14:42 Teammeeting",
+  "actions": [
+    "default",
+    "Activate",
+    "settings",
+    "Settings"
+  ],
+  "hints": {
+    "desktop-entry": "chromium",
+    "urgency": 1
+  },
+  "timeout": -1,
+  "erwartet": {
+    "kind": "event",
+    "sender": "Tuta",
+    "title": "14:42 Teammeeting",
+    "body": ""
+  }
+}

@@ -1,0 +1,1264 @@
+#!/usr/bin/env python3
+# Live test of the island in the running shell: sends real notifications
+# over D-Bus, asks the island what it shows through its test IPC
+# (Probe.qml, target "omarchy-buddy.test") and checks Omarchy's
+# "notifications" IPC, omarchy-notification-wait, Claude requests through
+# the real hook (a Codex one too, long questions, a long plan, a cut command, a diff, a queue, a
+# question while its terminal has the focus, also
+# in English at the largest zoom: every button inside the window or
+# reachable by scrolling, ProbeLogic.layout), a finished agent run (a pop-up,
+# no news item, #173), a pop-up with many buttons,
+# the history (unfolding, "alle löschen" and undo), the settings page with
+# invalid values, the player window (tests/fake-player, Spotify's +
+# through tests/fake-hyprctl), Omarchy 4.5's
+# act, keyboard, invokeAction, count and omarchy-actions buttons, O-Morchy's
+# emotions (#177: played by their events, the stronger one wins) and the shell's log.
+#
+#   tests/live              run once, you at the PC
+#   tests/live --teilen     also the Ruhemodus while the screen is shared
+#                           (asks you to start a screen share, e.g. in the browser)
+#   tests/live --warten     first wait until you are back and the island is
+#                           quiet (bin/omarchy-buddy-check after an update);
+#                           leaves out "alle löschen" in the history
+#
+# Test notifications come from the app "Buddy-Test" and are taken out of
+# the history again at the end; the Ruhemodus is put back as it was. Exit
+# code 0: all good, 1: something failed, 2: the island does not answer,
+# 3: it failed only while something real was on the island (disturbed();
+# bin/omarchy-buddy-check then tries again later).
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+from gi.repository import Gio, GLib
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+import buddy  # noqa: E402
+
+TEST_APP = "Buddy-Test"
+OMARCHY = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
+HOME = os.path.expanduser("~")
+HOOK = os.path.join(HOME, ".local/bin/omarchy-buddy-hook")
+SAY = os.path.join(HOME, ".local/bin/omarchy-buddy-say")
+SHELL_JSON = os.path.join(HOME, ".config/omarchy/shell.json")
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "omarchy-buddy")
+SAVED = ("notifications.json", "popups.json", "news.json")
+QS_RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "quickshell")
+BUS_NAME = "org.freedesktop.Notifications"
+BUS_PATH = "/org/freedesktop/Notifications"
+
+results = []  # (name, "ok" | "fehler" | "übersprungen", detail)
+
+
+def report(name, status, detail=""):
+    results.append((name, status, detail))
+    mark = {"ok": "✓", "fehler": "✗", "übersprungen": "–"}[status]
+    print(f"{mark} {name}" + (f": {detail}" if detail else ""), flush=True)
+
+
+def check(name, ok, detail=""):
+    report(name, "ok" if ok else "fehler", "" if ok else detail + disturbed())
+    return ok
+
+
+def disturbed():
+    """What real, not the test's, is on the island right now: a failure then
+    may come from outside (another agent's request, a real pop-up)."""
+    s = state() or {}
+    ask, toast = s.get("ask") or {}, s.get("toast") or {}
+    parts = (["eine echte Rückfrage ist offen"] if ask and not str(ask.get("session", "")).startswith("buddy-test-") else []) \
+        + (["ein echtes Pop-up"] if toast and toast.get("app") != TEST_APP and not str(toast.get("key", "")).startswith("buddy-test-") else []) \
+        + (["du warst weg oder Vollbild"] if s.get("paused") else [])
+    return f" (dabei: {', '.join(parts)})" if parts else ""
+
+
+# ---------------------------------------------------------------- shell IPC
+
+def ipc(target, method, *args):
+    env = dict(os.environ, OMARCHY_PATH=OMARCHY, OMARCHY_SHELL_IPC_TIMEOUT="3s")
+    try:
+        out = subprocess.run(["omarchy-shell", target, method, *map(str, args)], env=env,
+                             capture_output=True, text=True, timeout=8)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def state():
+    raw = ipc("omarchy-buddy.test", "state")
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------- D-Bus
+
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+signals = []  # (name, args) of ActionInvoked, NotificationReplied, NotificationClosed
+
+
+def on_signal(_conn, _sender, _path, _iface, name, params):
+    signals.append((name, params.unpack()))
+
+
+bus.signal_subscribe(BUS_NAME, BUS_NAME, None, BUS_PATH, None, Gio.DBusSignalFlags.NONE, on_signal)
+
+
+def pump(seconds):
+    ctx = GLib.MainContext.default()
+    end = time.monotonic() + seconds
+    while True:
+        while ctx.iteration(False):
+            pass
+        if time.monotonic() >= end:
+            return
+        time.sleep(0.05)
+
+
+def notify(summary, body="", urgency=1, actions=(), hints=None):
+    h = {"urgency": GLib.Variant("y", urgency)}
+    for k, v in (hints or {}).items():
+        h[k] = GLib.Variant("s", v)
+    args = GLib.Variant("(susssasa{sv}i)", (TEST_APP, 0, "", summary, body, list(actions), h, -1))
+    res = bus.call_sync(BUS_NAME, BUS_PATH, BUS_NAME, "Notify", args, GLib.VariantType("(u)"),
+                        Gio.DBusCallFlags.NONE, 5000, None)
+    return res.unpack()[0]
+
+
+def bus_owner():
+    """PID and command name of whoever holds org.freedesktop.Notifications, or None."""
+    try:
+        res = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                            "GetConnectionUnixProcessID", GLib.Variant("(s)", (BUS_NAME,)),
+                            GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 2000, None)
+    except GLib.Error:
+        return None
+    pid = res.unpack()[0]
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return pid, f.read().strip()
+    except OSError:
+        return pid, ""
+
+
+def server_info():
+    try:
+        res = bus.call_sync(BUS_NAME, BUS_PATH, BUS_NAME, "GetServerInformation", None,
+                            GLib.VariantType("(ssss)"), Gio.DBusCallFlags.NONE, 2000, None)
+        return res.unpack()
+    except GLib.Error:
+        return None
+
+
+# ---------------------------------------------------------------- helpers
+
+def wait_for(pred, timeout=4.0):
+    """Polls the island's state until pred(state) holds; the last state."""
+    end = time.monotonic() + timeout
+    s = None
+    while True:
+        pump(0.15)
+        s = state() or {}
+        try:
+            if pred(s):
+                return s, True
+        except (KeyError, TypeError, IndexError):
+            pass
+        if time.monotonic() >= end:
+            return s, False
+
+
+def toast_title(s):
+    return (s.get("toast") or {}).get("title", "")
+
+
+def find_note(s, summary):
+    for n in s.get("notes", []):
+        if n["summary"] == summary:
+            return n
+    return None
+
+
+def got_signal(name, nid, value, timeout=3.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        pump(0.1)
+        if any(n == name and a[0] == nid and a[1] == value for n, a in signals):
+            return True
+    return False
+
+
+def clear_screen():
+    ipc("notifications", "dismissAll")
+    wait_for(lambda s: not s["toast"] and not s["queue"], 2)
+
+
+def hook(event, background=False, args=()):
+    """Hands an event to the real Claude hook (args ["--codex"]: Codex's),
+    outside this process tree (systemd-run), so it finds neither a claude
+    process nor a window. The hook's answer comes back on the process's stdout."""
+    cmd = ["systemd-run", "--user", "--quiet", "--collect", "--pipe", HOOK, *args]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    p.stdin.write(json.dumps(event).encode())
+    p.stdin.close()
+    if not background:
+        p.communicate(timeout=10)
+    return p
+
+
+def hook_answer(p):
+    """The decision a waiting hook handed to Claude, or None."""
+    try:
+        out, _ = p.communicate(timeout=6)
+        return json.loads(out)["hookSpecificOutput"]["decision"]
+    except (subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        p.kill()
+        return None
+
+
+def ask(sid, tool, tool_input):
+    return hook({"session_id": sid, "cwd": "/tmp", "hook_event_name": "PermissionRequest", "tool_name": tool,
+                 "tool_input": tool_input}, background=True)
+
+
+def end_session(sid):
+    subprocess.run([HOOK, "--decide", sid, "focus"], capture_output=True, timeout=5)
+    hook({"session_id": sid, "cwd": "/tmp", "hook_event_name": "SessionEnd", "reason": "other"})
+
+
+def layout(need=()):
+    """Every clickable thing the island shows, once its size has settled and
+    the named ones (or ones starting with them) are there (a click's new view
+    can take a moment)."""
+    last = None
+    for _ in range(20):
+        pump(0.25)
+        try:
+            now = json.loads(ipc("omarchy-buddy.test", "layout"))
+        except (TypeError, ValueError):
+            return {"items": [], "unreachable": ["(layout antwortet nicht)"], "flicks": []}
+        if last and now["island"] == last["island"] and all(any(m.startswith(n) for m in names(now)) for n in need):
+            return now
+        last = now
+    return last
+
+
+def click(*names, wait=3.0):
+    """Clicks the first of these names the island has (German, English),
+    waiting for one to be there and usable (a new view can take a moment)."""
+    end = time.monotonic() + wait
+    while True:
+        for name in names:
+            if ipc("omarchy-buddy.test", "testClick", name) == "ok":
+                pump(0.3)
+                return True
+        if time.monotonic() >= end:
+            return False
+        pump(0.2)
+
+
+def type_text(text):
+    """Types into the open text field, waiting for it to appear."""
+    end = time.monotonic() + 3
+    while (r := ipc("omarchy-buddy.test", "testType", text)) != "ok" and time.monotonic() < end:
+        pump(0.2)
+    pump(0.3)
+    return r == "ok"
+
+
+def names(lay):
+    return [i["name"] for i in lay["items"]]
+
+
+def check_reach(name, lay, need=()):
+    """Every clickable inside the window or reachable by scrolling, and the
+    named ones there at all."""
+    missing = [n for n in need if n not in names(lay)]
+    check(name, not lay["unreachable"] and not missing,
+          f"unerreichbar: {lay['unreachable']}, fehlt: {missing}, Insel {lay.get('island')}, Fenster {lay.get('window')}")
+
+
+def shell_log():
+    """The log of the shell process that serves notifications."""
+    owner = bus_owner()
+    if owner:
+        path = os.path.join(QS_RUN, "by-pid", str(owner[0]), "log.log")
+        if os.path.exists(path):
+            return path
+    dirs = [os.path.join(QS_RUN, "by-id", d) for d in os.listdir(os.path.join(QS_RUN, "by-id"))]
+    dirs.sort(key=os.path.getmtime)
+    return os.path.join(dirs[-1], "log.log") if dirs else None
+
+
+LOG_PROBLEM = re.compile(r"\s(WARN|ERROR|FATAL)\s")
+
+
+def buddy_log_problems(text):
+    return [l for l in text.splitlines()
+            if LOG_PROBLEM.search(l) and "omarchy-buddy" in l and "qmlscanner" not in l]
+
+
+# ---------------------------------------------------------------- the checks
+
+def check_service():
+    owner = bus_owner()
+    info = server_info()
+    check("Benachrichtigungsdienst antwortet", info is not None, "niemand hält org.freedesktop.Notifications")
+    check("Dienst ist die Shell (quickshell)", bool(owner) and owner[1] in ("quickshell", "qs"),
+          f"Besitzer: {owner}")
+    try:
+        with open(SHELL_JSON) as f:
+            disabled = json.load(f).get("disabledPlugins") or []
+        check("Omarchys Plugin aus (disabledPlugins)", "omarchy.notifications" in disabled,
+              "omarchy.notifications fehlt in disabledPlugins")
+    except (OSError, ValueError) as e:
+        report("Omarchys Plugin aus (disabledPlugins)", "fehler", str(e))
+    plugins = ipc("shell", "listPlugins")
+    try:
+        active = {p["id"]: p.get("enabled") for p in json.loads(plugins)}
+        check("nur ein Dienst: Omarchys Notifications nicht geladen", active.get("omarchy.notifications") is False,
+              f"omarchy.notifications enabled={active.get('omarchy.notifications')}")
+    except (TypeError, ValueError, KeyError):
+        report("nur ein Dienst: Omarchys Notifications nicht geladen", "übersprungen", "listPlugins antwortet nicht")
+    others = [f for f in os.listdir("/usr/share/dbus-1/services") if "Notifications" in f] \
+        if os.path.isdir("/usr/share/dbus-1/services") else []
+    check("kein zweiter Dienst per D-Bus-Aktivierung", not others, ", ".join(others))
+
+
+def check_popups(run):
+    clear_screen()
+    t = f"Normal {run}"
+    notify(t, "normale Meldung")
+    s, ok = wait_for(lambda s: toast_title(s) == t)
+    check("normal: Pop-up", ok, f"Pop-up: {toast_title(s)!r}")
+    check("normal: im Verlauf", find_note(s, t) is not None)
+    r = ipc("notifications", "dismissOne")
+    s, ok = wait_for(lambda s: toast_title(s) != t, 2)
+    check("IPC dismissOne", r == "ok" and ok, f"Antwort {r!r}, Pop-up {toast_title(s)!r}")
+
+    for kind, category in (("chat", "im.received"), ("mail", "email.arrived")):
+        t = f"Nachricht {kind} {run}"
+        notify(t, "von einem Menschen", hints={"category": category})
+        s, ok = wait_for(lambda s: toast_title(s) == t)
+        n = find_note(s, t) or {}
+        check(f"Nachricht von Menschen: {kind}-Zeichen im Pop-up und Verlauf (#123)",
+              ok and s["toast"].get("kind") == kind and n.get("kind") == kind, f"Pop-up: {s.get('toast')}, Eintrag: {n}")
+        ipc("notifications", "dismissOne")
+        wait_for(lambda s: toast_title(s) != t, 2)
+
+    t = f"Niedrig {run}"
+    notify(t, "nur Verlauf", urgency=0)
+    s, ok = wait_for(lambda s: find_note(s, t) is not None)
+    pump(0.8)
+    s = state() or {}
+    check("niedrig: nur im Verlauf", ok and toast_title(s) != t, f"Pop-up: {toast_title(s)!r}")
+
+    t = f"Kritisch {run}"
+    notify(t, "bleibt stehen", urgency=2)
+    s, ok = wait_for(lambda s: toast_title(s) == t and s["toast"]["sticky"])
+    check("kritisch: Pop-up bleibt stehen", ok, f"Pop-up: {s.get('toast')}")
+    r = ipc("notifications", "dismissAll")
+    s, ok = wait_for(lambda s: not s["toast"], 2)
+    check("IPC dismissAll", r == "ok" and ok, f"Antwort {r!r}")
+
+    t = f"Bündel {run}"
+    for i in range(3):
+        notify(t, f"Nachricht {i + 1}")
+    s, ok = wait_for(lambda s: toast_title(s) == t and s["toast"]["count"] == 3 and s["toast"]["body"] == "Nachricht 3")
+    check("Bündeln: drei vom selben Absender in einem Pop-up", ok, f"Pop-up: {s.get('toast')}")
+    clear_screen()
+
+    for i in range(6):
+        notify(f"Flut {run} {i + 1}", "")
+    s, ok = wait_for(lambda s: any(re.match(r"\d+ (Meldungen|notifications)$", q["title"]) for q in s["queue"]))
+    check("Flut: Sammelmeldung statt langer Schlange", ok, f"Schlange: {[q['title'] for q in s.get('queue', [])]}")
+    clear_screen()
+
+
+def check_actions(run):
+    t = f"Aktion {run}"
+    nid = notify(t, "mit Knopf", actions=["open", "Öffnen"])
+    s, _ = wait_for(lambda s: find_note(s, t) is not None)
+    n = find_note(s, t) or {}
+    check("Aktion: Knopf kommt an", n.get("actions") == ["open"] and n.get("live"), f"Eintrag: {n}")
+    r = ipc("omarchy-buddy.test", "testAction", n.get("key", ""), "open")
+    check("Aktion: App erfährt den Klick (ActionInvoked)", r == "ok" and got_signal("ActionInvoked", nid, "open"),
+          f"Antwort {r!r}")
+
+    t = f"Antwort {run}"
+    nid = notify(t, "mit Antwortfeld", actions=["inline-reply", "Antworten"],
+                 hints={"x-kde-reply-placeholder-text": "Antwort an Test"})
+    s, _ = wait_for(lambda s: (find_note(s, t) or {}).get("reply"))
+    n = find_note(s, t) or {}
+    check("Antwort: Feld wird angeboten", n.get("reply") is True, f"Eintrag: {n}")
+    r = ipc("omarchy-buddy.test", "testReply", n.get("key", ""), "Hallo von O-Morchy")
+    check("Antwort: App bekommt den Text (NotificationReplied)",
+          r == "ok" and got_signal("NotificationReplied", nid, "Hallo von O-Morchy"), f"Antwort {r!r}")
+
+    clear_screen()
+    t = f"Standard {run}"
+    nid = notify(t, "Klick öffnet", actions=["default", "Öffnen"])
+    wait_for(lambda s: toast_title(s) == t)
+    r = ipc("notifications", "invokeLast")
+    check("IPC invokeLast löst die Standardaktion aus", r == "ok" and got_signal("ActionInvoked", nid, "default"),
+          f"Antwort {r!r}")
+
+    t = f"Erstlauf-Hinweis {run}"
+    notify(t, "", urgency=2)
+    wait_for(lambda s: toast_title(s) == t)
+    r = ipc("notifications", "dismiss", "Erstlauf-Hinweis")
+    s, ok = wait_for(lambda s: toast_title(s) != t, 2)
+    check("IPC dismiss nach Titel (omarchy-notification-dismiss)", r == "ok" and ok, f"Antwort {r!r}")
+    clear_screen()
+
+
+def check_omarchy_45(run):
+    """Omarchy 4.5: buttons from the omarchy-actions hint, act, invokeAction,
+    keyboard and count (Super + Komma and friends)."""
+    clear_screen()
+    marks = [os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), f"omarchy-buddy-test-{run}-{i}") for i in (1, 2)]
+    commands = [{"label": f"Eins {run}", "argv": ["touch", marks[0]]}, {"label": f"Zwei {run}", "argv": ["touch", marks[1]]}]
+    t = f"Omarchy-Knöpfe {run}"
+    notify(t, "", hints={"omarchy-actions": json.dumps(commands), "omarchy-exec-argv": json.dumps(commands[0]["argv"])})
+    s, ok = wait_for(lambda s: toast_title(s) == t)
+    n = find_note(s, t) or {}
+    check("4.5: Knöpfe aus omarchy-actions im Datensatz", n.get("commands") == [c["label"] for c in commands], f"Eintrag: {n}")
+    if ok:
+        check_reach("4.5: Knöpfe aus omarchy-actions im Pop-up", layout([commands[1]["label"]]), [c["label"] for c in commands])
+    r = ipc("notifications", "invokeAction", 2)
+    wait_for(lambda s: os.path.exists(marks[1]), 3)
+    check("4.5: IPC invokeAction 2 startet den zweiten Befehl", r == "ok" and os.path.exists(marks[1])
+          and not os.path.exists(marks[0]), f"Antwort {r!r}")
+    for m in marks:
+        if os.path.exists(m):
+            os.remove(m)
+
+    t = f"Act ohne Knopf {run}"
+    notify(t, "")
+    wait_for(lambda s: toast_title(s) == t)
+    r = ipc("notifications", "act")
+    s, ok = wait_for(lambda s: toast_title(s) != t, 2)
+    check("4.5: IPC act ohne Knopf legt weg", r == "ok" and ok, f"Antwort {r!r}")
+    t = f"Act ein Knopf {run}"
+    nid = notify(t, "", actions=["ok", "OK"])
+    wait_for(lambda s: toast_title(s) == t)
+    r = ipc("notifications", "act")
+    check("4.5: IPC act drückt den einen Knopf", r == "ok" and got_signal("ActionInvoked", nid, "ok"), f"Antwort {r!r}")
+    t = f"Act Klick {run}"
+    nid = notify(t, "", actions=["default", "Öffnen"])
+    wait_for(lambda s: toast_title(s) == t)
+    check("4.5: IPC count", ipc("notifications", "count") == "1")
+    r = ipc("notifications", "act")
+    check("4.5: IPC act klickt", r == "ok" and got_signal("ActionInvoked", nid, "default"), f"Antwort {r!r}")
+
+    t = f"Act zwei Knöpfe {run}"
+    notify(t, "", actions=["a", f"Erster {run}", "b", "Zweiter"])
+    wait_for(lambda s: toast_title(s) == t)
+    r = ipc("notifications", "act")
+    try:
+        s, ok = wait_for(lambda s: s["opened"], 2)
+        end = time.monotonic() + 2
+        while ipc("omarchy-buddy.test", "focused") != f"Erster {run}" and time.monotonic() < end:
+            pump(0.1)
+        focus = ipc("omarchy-buddy.test", "focused")
+        check("4.5: IPC act mit zwei Knöpfen = keyboard: große Ansicht, erster Knopf hat den Fokus",
+              r == "on" and ok and focus == f"Erster {run}", f"Antwort {r!r}, Fokus {focus!r}")
+        r = ipc("notifications", "keyboard")
+        s, ok = wait_for(lambda s: not s["opened"], 2)
+        check("4.5: IPC keyboard ein zweites Mal schließt", r == "off" and ok, f"Antwort {r!r}")
+    finally:
+        ipc("omarchy-buddy", "close")
+        wait_for(lambda s: not s["opened"], 2)
+    clear_screen()
+
+
+EMOTES = ("ask", "outage", "alarm", "done", "failed", "relief", "mail", "chat")
+
+
+def check_emotes():
+    """O-Morchy's #177 emotions play in the bar widget; QML errors would show in check_log."""
+    bad = []
+    for e in EMOTES:
+        if ipc("omarchy-buddy.test", "testEmote", e) is None:
+            bad.append(e)
+        pump(0.4)
+    ipc("omarchy-buddy.test", "testEmote", "")
+    check("O-Morchy spielt die Emotionen (#177)", not bad, f"keine Antwort bei {bad}")
+
+
+def check_feelings(run):
+    """#177: an event's emotion plays as its pop-up appears; a stronger one
+    playing is not replaced; a letter leaves with its pop-up."""
+    clear_screen()
+    keys = [f"buddy-test-{run}-e{i}" for i in range(3)]
+    try:
+        say = lambda key, source, level, title: subprocess.run(  # noqa: E731
+            [SAY, "--source", source, "--level", level, "--key", key, title, ""], timeout=5)
+        say(keys[0], "terminal", "good", f"Befehl fertig {run}")
+        s, ok = wait_for(lambda s: toast_title(s) == f"Befehl fertig {run}" and s["emote"] == "done")
+        check("Emotion: langer Befehl fertig nickt (#177)", ok, f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
+        clear_screen()
+        say(keys[1], "kuma", "warn", f"Dienst aus {run}")
+        say(keys[2], "terminal", "error", f"Befehl fehlgeschlagen {run}")
+        s, ok = wait_for(lambda s: toast_title(s) == f"Dienst aus {run}" and s["emote"] == "outage")
+        check("Emotion: Kuma-Ausfall (#177)", ok, f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
+        ipc("notifications", "dismissOne")
+        s, ok = wait_for(lambda s: toast_title(s) == f"Befehl fehlgeschlagen {run}", 2)
+        check("Emotion: der Ausfall gewinnt gegen „fehlgeschlagen“ (#177)", ok and s["emote"] == "outage",
+              f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
+        clear_screen()
+        wait_for(lambda s: s["emote"] == "", 4)  # the outage still plays and would win
+        notify(f"Rechnung {run}", "", hints={"category": "email.arrived"})
+        s, ok = wait_for(lambda s: toast_title(s) == f"Rechnung {run}" and s["emote"] == "mail")
+        check("Emotion: Brief im Pop-up einer Mail (#177)", ok, f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
+        clear_screen()
+        s, ok = wait_for(lambda s: s["emote"] == "", 2)
+        check("Emotion: der Brief geht mit dem Pop-up, nicht ins Leisten-Widget (#177)", ok, f"Emotion {s.get('emote')!r}")
+    finally:
+        for key in keys:
+            buddy.unsay(key)
+        clear_screen()
+
+
+def check_omarchy_ipc():
+    check("IPC ping", ipc("notifications", "ping") == "ok")
+    before = ipc("notifications", "isDnd")
+    flipped = ipc("notifications", "toggleDnd")
+    back = ipc("notifications", "toggleDnd")
+    check("IPC isDnd/toggleDnd", before in ("on", "off") and flipped != before and back == before,
+          f"{before} → {flipped} → {back}")
+    r = ipc("notifications", "setDnd", "on" if before == "on" else "off")
+    check("IPC setDnd", r == before, f"Antwort {r!r}")
+    r = ipc("notifications", "showHistory")
+    s, ok = wait_for(lambda s: s["opened"], 2)
+    check("IPC showHistory öffnet die große Ansicht", r == "ok" and ok)
+    ipc("omarchy-buddy", "close")
+    wait_for(lambda s: not s["opened"], 2)
+    try:
+        code = subprocess.run(["omarchy-notification-wait", "5"], timeout=10,
+                              env=dict(os.environ, OMARCHY_PATH=OMARCHY)).returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        code = str(e)
+    check("omarchy-notification-wait", code == 0, f"Exit {code}")
+
+
+def check_claude(run):
+    clear_screen()
+    t = f"Vor der Rückfrage {run}"
+    notify(t, "")
+    wait_for(lambda s: toast_title(s) == t)
+    sid = f"buddy-test-{run}"
+    event = {"session_id": sid, "cwd": "/tmp", "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+             "tool_input": {"command": "echo Buddy-Test", "description": "Testrückfrage"}}
+    waiting = hook(event, background=True)
+    try:
+        s, ok = wait_for(lambda s: s["mode"] == "needs" and s["ask"]["session"] == sid, 6)
+        check("Claude-Rückfrage hat Vorrang vor dem Pop-up", ok,
+              f"Ansicht {s.get('mode')!r}, Rückfrage {s.get('ask')}")
+        check("Claude-Rückfrage: Anfrage entscheidbar", ok and s["ask"]["request"] != "" and s["ask"]["tool"] == "Bash")
+    finally:
+        subprocess.run([HOOK, "--decide", sid, "focus"], capture_output=True, timeout=5)
+        try:
+            waiting.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            waiting.kill()
+        hook({"session_id": sid, "cwd": "/tmp", "hook_event_name": "SessionEnd", "reason": "other"})
+    s, ok = wait_for(lambda s: not s["ask"] or s["ask"]["session"] != sid, 4)
+    check("Claude-Rückfrage: nach SessionEnd weg", ok)
+    clear_screen()
+
+
+LONG = ("mit einer ausführlichen Beschreibung, die über mehrere Zeilen läuft, damit die Insel "
+        "zeigen muss, ob sie lange Texte umbricht und trotzdem alle Knöpfe erreichbar bleiben")
+
+
+def long_questions(run):
+    return [{"question": f"Frage {q} {run}: Welche der folgenden Möglichkeiten soll ich nehmen, {LONG}?",
+             "header": f"Teil {q} mit langem Titel",
+             "multiSelect": q == 2,
+             "options": [{"label": f"Möglichkeit {q}.{o} {run} mit langem Namen", "description": f"Möglichkeit {o} {LONG}."}
+                         for o in range(1, 5)]}
+            for q in range(1, 5)]
+
+
+def check_question(run, en=False):
+    """AskUserQuestion, 4 questions × 4 long options, one with several
+    choices, one with an own answer: all reachable, the answers reach Claude."""
+    tag = " (Englisch, Zoom 1,6)" if en else ""
+    sid = f"buddy-test-{run}-q{'en' if en else ''}"
+    questions = long_questions(run)
+    waiting = ask(sid, "AskUserQuestion", {"questions": questions})
+    try:
+        s, ok = wait_for(lambda s: s["ask"]["session"] == sid and s["ask"]["kind"] == "question", 6)
+        if not check("lange Frage: kommt als Frage mit 4 Teilen" + tag, ok and s["ask"]["questions"] == 4, f"Rückfrage {s.get('ask')}"):
+            return
+        answer = "Answer" if en else "Antworten"
+        lay = layout()
+        check_reach("lange Frage: alle Möglichkeiten und Knöpfe erreichbar" + tag, lay,
+                    [answer] + [o["label"] for q in questions for o in q["options"]])
+        check("lange Frage: Inhalt scrollt" + tag, any(f["interactive"] for f in lay["flicks"]), f"Flächen {lay['flicks']}")
+        btn = next((i for i in lay["items"] if i["name"] == answer), {})
+        check(f"lange Frage: „{answer}“ wartet auf alle Antworten" + tag, btn.get("enabled") is False, f"Knopf {btn}")
+        if en:
+            return
+        # "Eigene Antwort" is a row like the options, once per question; the first is question 1's.
+        own = next((i for i in lay["items"] if i["name"] == "Eigene Antwort"), {})
+        first = next((i for i in lay["items"] if i["name"] == questions[0]["options"][0]["label"]), {})
+        check("Eigene Antwort: Auswahlzeile wie die Möglichkeiten", own.get("reach") and own.get("x") == first.get("x")
+              and own.get("w") == first.get("w"), f"Eigene {own}, Möglichkeit {first}")
+        click("Eigene Antwort", "Own answer")
+        need = ["Schicken", "Abbrechen"]
+        check_reach("Eigene Antwort: Feld mit Schicken/Abbrechen erreichbar", layout(need), need)
+        type_text(f"Eigene Antwort {run}")
+        click(questions[1]["options"][0]["label"])
+        click(questions[1]["options"][3]["label"])
+        click(questions[2]["options"][2]["label"])
+        click(questions[3]["options"][1]["label"])
+        lay = layout()
+        btn = next((i for i in lay["items"] if i["name"] == answer), {})
+        check("lange Frage: „Antworten“ geht, wenn alles beantwortet ist", btn.get("enabled") is True and btn.get("reach"),
+              f"Knopf {btn}")
+        click(answer)
+        result = hook_answer(waiting)
+        want = {questions[0]["question"]: f"Eigene Antwort {run}",
+                questions[1]["question"]: questions[1]["options"][0]["label"] + ", " + questions[1]["options"][3]["label"],
+                questions[2]["question"]: questions[2]["options"][2]["label"],
+                questions[3]["question"]: questions[3]["options"][1]["label"]}
+        got = ((result or {}).get("updatedInput") or {}).get("answers")
+        check("lange Frage: Claude bekommt alle Antworten (Mehrfachauswahl, eigene)", got == want, f"bekommen {got}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def long_plan(run):
+    steps = "\n".join(f"{i}. Schritt {i}: {LONG}." for i in range(1, 41))
+    return f"# Langer Plan {run}\n\n## Ziel\n\n{LONG}.\n\n## Schritte\n\n{steps}\n"
+
+
+def check_plan(run, en=False):
+    """ExitPlanMode with a long plan: unfold, revise with feedback."""
+    tag = " (Englisch, Zoom 1,6)" if en else ""
+    sid = f"buddy-test-{run}-p{'en' if en else ''}"
+    waiting = ask(sid, "ExitPlanMode", {"plan": long_plan(run)})
+    try:
+        s, ok = wait_for(lambda s: s["ask"]["session"] == sid and s["ask"]["kind"] == "plan", 6)
+        if not check("langer Plan: kommt als Plan" + tag, ok, f"Rückfrage {s.get('ask')}"):
+            return
+        approve, revise = ("Approve", "Revise …") if en else ("Freigeben", "Überarbeiten …")
+        check_reach("langer Plan: Knöpfe erreichbar" + tag, layout([approve, revise]), [approve, revise])
+        unfolded = click("ganzer Plan", "whole plan")
+        lay = layout()
+        check("langer Plan: aufgeklappt scrollt er" + tag, unfolded and any(f["interactive"] for f in lay["flicks"]),
+              f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
+        check_reach("langer Plan: aufgeklappt Knöpfe erreichbar" + tag, lay, [approve, revise])
+        click(revise)
+        send, cancel = ("Send", "Cancel") if en else ("Schicken", "Abbrechen")
+        check_reach("Überarbeiten: Feld mit Schicken/Abbrechen erreichbar" + tag, layout([send, cancel]), [send, cancel])
+        if en:
+            return
+        type_text(f"Bitte kürzer {run}")
+        result = hook_answer(waiting) or {}
+        check("Überarbeiten: Claude bekommt den Text", result.get("behavior") == "deny" and result.get("message") == f"Bitte kürzer {run}",
+              f"bekommen {result}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def check_cut_command(run):
+    """A command longer than the hook keeps: unfolds, scrolls, says it is cut."""
+    sid = f"buddy-test-{run}-c"
+    command = "\n".join(f"echo 'Zeile {i} {run} {LONG}'" for i in range(1, 60))
+    waiting = ask(sid, "Bash", {"command": command, "description": "Sehr langer Befehl"})
+    try:
+        s, ok = wait_for(lambda s: s["ask"]["session"] == sid, 6)
+        if not check("gekürzter Befehl: Hook meldet die Kürzung", ok and s["ask"]["truncated"], f"Rückfrage {s.get('ask')}"):
+            return
+        unfolded = click("ganzer Befehl", "whole command")
+        lay = layout()
+        check("gekürzter Befehl: aufgeklappt scrollt er", unfolded and any(f["interactive"] for f in lay["flicks"]),
+              f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
+        check_reach("gekürzter Befehl: Knöpfe erreichbar", lay, ["Erlauben", "Ablehnen"])
+        click("Ablehnen")
+        result = hook_answer(waiting) or {}
+        check("gekürzter Befehl: Ablehnen kommt bei Claude an", result.get("behavior") == "deny", f"bekommen {result}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def check_codex(run):
+    """A Codex request (#130): Erlauben and Ablehnen only, Codex's answer format."""
+    sid = f"buddy-test-{run}-x"
+    patch = "*** Begin Patch\n*** Add File: buddy-test.txt\n+x\n*** End Patch"
+    waiting = hook({"session_id": sid, "turn_id": "t", "cwd": "/tmp", "hook_event_name": "PermissionRequest",
+                    "model": "m", "permission_mode": "default", "tool_name": "apply_patch",
+                    "tool_input": {"command": patch}}, background=True, args=["--codex"])
+    try:
+        s, ok = wait_for(lambda s: s["ask"] and s["ask"]["session"] == sid, 6)
+        if not check("Codex-Rückfrage: kommt mit ihren Dateien", ok and s["ask"]["tool"] == "apply_patch", f"Rückfrage {s.get('ask')}"):
+            return
+        lay = layout(["Erlauben"])
+        check("Codex-Rückfrage: Erlauben und Ablehnen, kein Immer erlauben",
+              "Ablehnen" in names(lay) and "Immer erlauben" not in names(lay), f"Knöpfe {names(lay)}")
+        click("Erlauben")
+        result = hook_answer(waiting)
+        check("Codex-Rückfrage: Codex bekommt nur behavior allow", result == {"behavior": "allow"}, f"bekommen {result}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def check_diff(run):
+    """A file change shows as a diff: unfolds, scrolls, buttons in reach."""
+    sid = f"buddy-test-{run}-d"
+    lines = [f"zeile_{i} = '{run} {LONG}'" for i in range(1, 80)]
+    new = lines[:10] + ["neu = True"] + lines[12:]
+    waiting = ask(sid, "Edit", {"file_path": f"/tmp/buddy-test-{run}.py", "old_string": "\n".join(lines),
+                                "new_string": "\n".join(new)})
+    try:
+        s, ok = wait_for(lambda s: s["ask"]["session"] == sid, 6)
+        if not check("Diff: Datei-Änderung kommt an", ok, f"Rückfrage {s.get('ask')}"):
+            return
+        unfolded = click("ganze Änderung", "whole change")
+        lay = layout()
+        check("Diff: aufgeklappt scrollt er", unfolded and any(f["interactive"] for f in lay["flicks"]),
+              f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
+        check_reach("Diff: Knöpfe erreichbar", lay, ["Erlauben", "Ablehnen"])
+        click("Ablehnen")
+        result = hook_answer(waiting) or {}
+        check("Diff: Ablehnen kommt bei Claude an", result.get("behavior") == "deny", f"bekommen {result}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def check_queue(run):
+    """Three sessions ask at once: paging, each answered in turn."""
+    sids = [f"buddy-test-{run}-w{i}" for i in range(3)]
+    waiting = [ask(sid, "Bash", {"command": f"echo Warteschlange {i}", "description": "Warteschlange"})
+               for i, sid in enumerate(sids)]
+    try:
+        s, ok = wait_for(lambda s: s["asks"] >= 3, 8)
+        check("Warteschlange: drei Rückfragen", ok, f"{s.get('asks')} Rückfragen")
+        need = ["Vorherige Anfrage", "Nächste Anfrage", "Erlauben"]
+        check_reach("Warteschlange: Blättern und Knöpfe erreichbar", layout(need), need)
+        first = (state() or {}).get("ask", {}).get("session")
+        click("Nächste Anfrage")
+        s, ok = wait_for(lambda s: s["ask"]["session"] != first, 2)
+        check("Warteschlange: Nächste Anfrage blättert weiter", ok)
+        answered = 0
+        for _ in sids:
+            current = (state() or {}).get("ask") or {}
+            if not current.get("session", "").startswith(f"buddy-test-{run}-w") or not click("Erlauben"):
+                break
+            answered += 1
+            wait_for(lambda s: not s["ask"] or s["ask"]["request"] != current["request"], 3)
+        results = [hook_answer(w) or {} for w in waiting]
+        check("Warteschlange: jede Antwort kommt bei ihrer Sitzung an",
+              answered == 3 and all(r.get("behavior") == "allow" for r in results), f"{answered} beantwortet, {results}")
+    finally:
+        for sid in sids:
+            end_session(sid)
+        for w in waiting:
+            if w.poll() is None:
+                w.kill()
+
+
+def check_long_asks(run):
+    clear_screen()
+    check_question(run)
+    check_plan(run)
+    check_cut_command(run)
+    check_codex(run)
+    check_diff(run)
+    check_queue(run)
+    # English at the largest zoom (only in memory, config.json stays).
+    ipc("omarchy-buddy.test", "testSettings", json.dumps({"language": "en", "zoom": 1.6}))
+    try:
+        check_question(run, en=True)
+        check_plan(run, en=True)
+    finally:
+        ipc("omarchy-buddy.test", "testSettings", "")
+    clear_screen()
+
+
+def check_in_view(run):
+    """A question from a session whose terminal has the focus right now (the
+    one running this test): the island still shows it and can answer it."""
+    sid = f"buddy-test-{run}-blick"
+    window = json.loads(subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True).stdout or "{}").get("address")
+    if not window:
+        report("Rückfrage im Blick", "übersprungen", "kein fokussiertes Fenster")
+        return
+    hook({"session_id": sid, "cwd": "/tmp", "hook_event_name": "SessionStart"})
+    # The hook under systemd-run finds no window; give the session this one.
+    run_dir = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "omarchy-buddy")
+    with open(os.path.join(run_dir, "lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(os.path.join(run_dir, "state.json")) as f:
+            data = json.load(f)
+        data[sid]["window"] = window
+        with open(os.path.join(run_dir, "state.json.tmp"), "w") as f:
+            json.dump(data, f)
+        os.replace(os.path.join(run_dir, "state.json.tmp"), os.path.join(run_dir, "state.json"))
+    question = {"question": f"Im Blick {run}: weiter?", "header": "Blick", "multiSelect": False,
+                "options": [{"label": f"Ja, weiter {run}", "description": ""}, {"label": "Nein", "description": ""}]}
+    waiting = ask(sid, "AskUserQuestion", {"questions": [question]})
+    try:
+        s, ok = wait_for(lambda s: s["ask"]["session"] == sid and s["ask"]["request"] != "", 6)
+        check("Rückfrage im Blick: Insel zeigt sie beantwortbar", ok and s["mode"] == "needs", f"Ansicht {s.get('mode')!r}, Rückfrage {s.get('ask')}")
+        pump(2.5)
+        check("Rückfrage im Blick: Hook wartet weiter", waiting.poll() is None)
+        click(f"Ja, weiter {run}")
+        got = ((hook_answer(waiting) or {}).get("updatedInput") or {}).get("answers")
+        check("Rückfrage im Blick: Antwort aus der Insel kommt an", got == {question["question"]: f"Ja, weiter {run}"}, f"bekommen {got}")
+    finally:
+        end_session(sid)
+        if waiting.poll() is None:
+            waiting.kill()
+
+
+def check_done_popup(run):
+    """A finished agent run (#173): a pop-up, but no news item, not unread."""
+    clear_screen()
+    t, key = f"Fertig {run}", f"buddy-test-{run}-fertig"
+    subprocess.run([SAY, "--source", "claude", "--level", "good", "--popup-only", "--key", key, t, "nur Pop-up"],
+                   timeout=5)
+    try:
+        s, ok = wait_for(lambda s: toast_title(s) == t)
+        check("Agent fertig: Pop-up (#173)", ok, f"Pop-up: {toast_title(s)!r}")
+        check("Agent fertig: nicht in den Neuigkeiten (#173)", t not in s.get("news", []), f"Neuigkeiten: {s.get('news')}")
+    finally:
+        buddy.unsay(key)
+        clear_screen()
+
+
+def ys(lay, name):
+    return [i["y"] for i in lay["items"] if i["name"] == name]
+
+
+def check_for_you(run):
+    """"Für dich" (#175): a mail stands above the agents, once; a plain
+    message stays below them. #178: it stays after its pop-up and the view
+    closing, until its × deletes it."""
+    clear_screen()
+    sids = [f"buddy-test-{run}-fd{i}" for i in range(3)]
+    for i, sid in enumerate(sids):
+        hook({"session_id": sid, "cwd": f"/tmp/fuer-dich-{i}", "hook_event_name": "UserPromptSubmit", "prompt": "Galerie"})
+    mail, plain = f"Rechnung {run}", f"Paket {run}"
+    notify(mail, "Deine Rechnung ist da.", urgency=0, hints={"category": "email.arrived"})
+    notify(plain, "Zustellung heute", urgency=0)
+    wait_for(lambda s: find_note(s, mail) and find_note(s, plain))
+    ipc("omarchy-buddy", "open")
+    try:
+        wait_for(lambda s: s["opened"], 2)
+        lay = layout([mail, plain])
+        hides = ys(lay, "Ausblenden") or ys(lay, "Hide")
+        check("Für dich: Mail einmal, über den Agents (#175)",
+              len(ys(lay, mail)) == 1 and bool(hides) and ys(lay, mail)[0] < min(hides), f"Mail {ys(lay, mail)}, Agents {hides}")
+        check("Für dich: andere Meldung unter den Agents (#175)",
+              len(ys(lay, plain)) == 1 and bool(hides) and ys(lay, plain)[0] > max(hides), f"Meldung {ys(lay, plain)}, Agents {hides}")
+        check_reach("Für dich: alles erreichbar", lay)
+    finally:
+        ipc("omarchy-buddy", "close")
+        wait_for(lambda s: not s["opened"], 2)
+    # #178: a mail and a critical one seen as pop-ups, the view opened and
+    # closed: still in the block, until their × deletes them.
+    pop, crit = f"Rechnung als Pop-up {run}", f"Akku fast leer {run}"
+    notify(pop, "Deine Rechnung ist da.", hints={"category": "email.arrived"})
+    wait_for(lambda s: toast_title(s) == pop)
+    notify(crit, "Noch 5 %", urgency=2)
+    wait_for(lambda s: find_note(s, crit))
+    clear_screen()
+    try:
+        for turn in ("nach dem Pop-up", "nach Schließen und Öffnen"):
+            ipc("omarchy-buddy", "open")
+            wait_for(lambda s: s["opened"], 2)
+            lay = layout([pop, crit])
+            hides = ys(lay, "Ausblenden") or ys(lay, "Hide")
+            check(f"Für dich bleibt {turn} (#178)",
+                  bool(hides) and all(len(ys(lay, n)) == 1 and ys(lay, n)[0] < min(hides) for n in (pop, crit)),
+                  f"Mail {ys(lay, pop)}, Kritisch {ys(lay, crit)}, Agents {hides}")
+            ipc("omarchy-buddy", "close")
+            wait_for(lambda s: not s["opened"], 2)
+        ipc("omarchy-buddy", "open")
+        wait_for(lambda s: s["opened"], 2)
+        click(f"Aus dem Verlauf löschen: {pop}", f"Remove from history: {pop}")
+        s, ok = wait_for(lambda s: not find_note(s, pop))
+        check("Für dich: × löscht es aus dem Verlauf (#178)", ok and not ys(layout(), pop), "Mail noch da")
+    finally:
+        ipc("omarchy-buddy", "close")
+        wait_for(lambda s: not s["opened"], 2)
+        for sid in sids:
+            end_session(sid)
+        clear_screen()
+
+
+def check_many_actions(run):
+    clear_screen()
+    t = f"Viele Knöpfe {run}"
+    actions = []
+    for i in range(1, 7):
+        actions += [f"a{i}", f"Aktion {i} mit recht langem Namen"]
+    notify(t, "Sechs Aktionen", actions=actions)
+    s, ok = wait_for(lambda s: toast_title(s) == t)
+    if check("viele Aktionen: Pop-up", ok, f"Pop-up {toast_title(s)!r}"):
+        # The pop-up shows the first three (NoteLogic.liveActions), in one wrapping row.
+        need = [actions[i] for i in range(1, 6, 2)]
+        check_reach("viele Aktionen: Knöpfe erreichbar (Umbruch)", layout(need), need)
+    clear_screen()
+
+
+def check_history(run, clear_all):
+    """A long message unfolds in the history; "alle löschen", empty state, undo."""
+    clear_screen()
+    t = f"Lange Meldung {run}"
+    body = f"Anfang {run}: " + " ".join([LONG] * 6)
+    notify(t, body, urgency=0)
+    wait_for(lambda s: find_note(s, t) is not None)
+    ipc("omarchy-buddy", "open")
+    try:
+        wait_for(lambda s: s["opened"], 2)
+        before = next((i for i in layout([f"Anfang {run}"])["items"] if i["name"].startswith(f"Anfang {run}")), None)
+        check("Verlauf: lange Meldung gekürzt", bool(before) and before["truncated"], f"Eintrag {before}")
+        click(f"Anfang {run}")
+        lay = layout([f"Anfang {run}"])
+        after = next((i for i in lay["items"] if i["name"].startswith(f"Anfang {run}")), None)
+        check("Verlauf: lange Meldung klappt auf", bool(before) and bool(after) and not after["truncated"] and after["h"] > before["h"],
+              f"vorher {before}, nachher {after}")
+        check_reach("Verlauf: aufgeklappt alles erreichbar", lay)
+        if not clear_all:
+            report("Verlauf: alle löschen und Rückgängig", "übersprungen", "nicht mit --warten")
+            return
+        n = (state() or {}).get("noteCount", 0)
+        keys = [x["key"] for x in (state() or {}).get("notes", [])]
+        if not click("alle löschen", "clear all"):
+            report("Verlauf: alle löschen", "fehler", "Link fehlt")
+            return
+        s, ok = wait_for(lambda s: s["noteCount"] == 0)
+        lay = layout()
+        check("Verlauf: alle löschen leert ihn (Leerzustand)", ok and "alle löschen" not in names(lay), f"{s.get('noteCount')} übrig")
+        check_reach("Leerzustand: Rückgängig erreichbar", lay, ["Rückgängig"])
+        click("Rückgängig", "Undo")
+        s, ok = wait_for(lambda s: s["noteCount"] == n and [x["key"] for x in s["notes"]] == keys)
+        check("Verlauf: Rückgängig holt alle Meldungen zurück", ok, f"{s.get('noteCount')} statt {n}")
+    finally:
+        ipc("omarchy-buddy", "close")
+        wait_for(lambda s: not s["opened"], 2)
+
+
+def check_settings_page():
+    """The settings page with invalid values, a broken file, in English at
+    the largest zoom; only in memory, config.json stays as it is."""
+    probe = lambda *a: ipc("omarchy-buddy.test", *a)  # noqa: E731
+    real = state() or {}
+    probe("testSettingsPage", "true")
+    try:
+        probe("testSettings", json.dumps({"zoom": 7, "popupTime": "ewig", "limitWarn": "viel", "language": "de",
+                                         "tickerInPill": True}))
+        s, ok = wait_for(lambda s: len(s["settingsInvalid"]) == 3)
+        check("Einstellungen: ungültige Werte werden genannt, alte (tickerInPill) nicht", ok, f"ungültig {s.get('settingsInvalid')}")
+        check_reach("Einstellungen mit ungültigen Werten: alles erreichbar", layout())
+        probe("testSettings", "{kaputt")
+        s, ok = wait_for(lambda s: s["settingsBroken"])
+        check("Einstellungen: kaputte Datei erkannt", ok)
+        check_reach("Einstellungen mit kaputter Datei: alles erreichbar", layout())
+        probe("testSettings", json.dumps({"language": "en", "zoom": 1.6}))
+        wait_for(lambda s: s["settings"]["language"] == "en", 2)
+        check_reach("Einstellungen auf Englisch, Zoom 1,6: alles erreichbar", layout())
+    finally:
+        probe("testSettings", "")
+        probe("testSettingsPage", "false")
+        ipc("omarchy-buddy", "close")
+    s = state() or {}
+    check("Einstellungen: danach wieder die echten",
+          [s.get(k) for k in ("settings", "settingsBroken", "settingsInvalid")]
+          == [real.get(k) for k in ("settings", "settingsBroken", "settingsInvalid")], f"jetzt {s.get('settings')}")
+
+
+def other_playing():
+    """Does a player other than tests/fake-player play right now?"""
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    names = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames",
+                          None, None, Gio.DBusCallFlags.NONE, 2000).unpack()[0]
+    for name in names:
+        if not name.startswith("org.mpris.MediaPlayer2.") or name.endswith(".buddytest"):
+            continue
+        try:
+            status = bus.call_sync(name, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties", "Get",
+                                   GLib.Variant("(ss)", ("org.mpris.MediaPlayer2.Player", "PlaybackStatus")),
+                                   None, Gio.DBusCallFlags.NONE, 2000).unpack()[0]
+        except GLib.Error:
+            continue
+        if status == "Playing":
+            return True
+    return False
+
+
+def check_player():
+    """The player window beside the open view with tests/fake-player (the
+    test IPC never clicks the user's own music): it shows while a track is
+    loaded, also paused; greyed-out buttons do nothing; it goes with the view."""
+    fake = subprocess.Popen([os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake-player"), "--no-prev"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        ipc("omarchy-buddy", "open")
+        mine = lambda s: (s.get("player") or {}).get("identity") == "Buddy-Test"  # noqa: E731
+        s, ok = wait_for(lambda s: mine(s) and s["player"]["shown"] and s["player"]["playing"], 5)
+        check("Player: Fenster neben der großen Ansicht", ok, f"player {s.get('player')}")
+        check("Player: Pause", click("Pausieren", "Pause"))
+        if other_playing():
+            report("Player: pausiert bleibt das Fenster", "übersprungen", "ein anderer Player spielt, der gewinnt")
+        else:
+            s, ok = wait_for(lambda s: mine(s) and not s["player"]["playing"] and s["player"]["shown"])
+            check("Player: pausiert bleibt das Fenster", ok, f"player {s.get('player')}")
+        check("Player: was der Player nicht kann, ist ausgegraut", not click("Vorheriger Titel", "Previous track"))
+        ipc("omarchy-buddy", "close")
+        s, ok = wait_for(lambda s: not s["opened"] and not (s.get("player") or {}).get("shown"))
+        check("Player: schließt mit der großen Ansicht", ok, f"player {s.get('player')}")
+    finally:
+        ipc("omarchy-buddy", "close")
+        fake.terminate()
+        calls = fake.communicate(timeout=5)[0].split()
+    check("Player: der Klick erreicht den Player", calls in (["PlayPause"], ["Pause"]), f"Aufrufe {calls}")
+    s, ok = wait_for(lambda s: (s.get("player") or {}).get("identity") != "Buddy-Test")
+    check("Player: weg, wenn der Player geht", ok)
+
+
+def check_spotify_key():
+    """Spotify's + without a connection (#162): tests/fake-player named
+    like Spotify's desktop app, tests/fake-hyprctl instead of hyprctl (set
+    before the player starts), so the shortcut never reaches the user's
+    Spotify. Shown, a click sends it to the window's address, a short
+    feedback, a failed send hides the +."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    hyprctl = os.path.join(here, "fake-hyprctl")
+    fd, log = tempfile.mkstemp(prefix="buddy-test-hyprctl-")
+    os.close(fd)
+    names = ("In deinen Lieblingssongs speichern oder entfernen", "Save to or remove from your Liked Songs")
+    ipc("omarchy-buddy.test", "testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log]}))
+    fake = subprocess.Popen([os.path.join(here, "fake-player"), "--spotify-app"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        ipc("omarchy-buddy", "open")
+        mine = lambda s: (s.get("player") or {}).get("identity") == "Buddy-Test"  # noqa: E731
+        s, ok = wait_for(lambda s: mine(s) and s["spotify"]["like"] == "toggle", 5)
+        check("Spotify ohne Verbindung: + bei Spotifys App", ok, f"spotify {s.get('spotify')}")
+        check("Spotify ohne Verbindung: Klick aufs Herz", click(*names))
+        s, ok = wait_for(lambda s: s["spotify"]["like"] == "sent")
+        check("Spotify ohne Verbindung: kurze Rückmeldung", ok, f"spotify {s.get('spotify')}")
+        with open(log) as f:
+            sent = f.read().splitlines()
+        check("Spotify ohne Verbindung: Kürzel an die Adresse des Fensters",
+              sent == ['hl.dsp.send_shortcut({ mods = "ALT SHIFT", key = "B", window = "address:0x162" })'], f"{sent}")
+        ipc("omarchy-buddy.test", "testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log, "--fail"]}))
+        wait_for(lambda s: s["spotify"]["like"] == "toggle")
+        click(*names)
+        s, ok = wait_for(lambda s: s["spotify"]["like"] == "")
+        check("Spotify ohne Verbindung: Fehler blendet das Herz aus", ok, f"spotify {s.get('spotify')}")
+    finally:
+        ipc("omarchy-buddy.test", "testSpotify", "")
+        ipc("omarchy-buddy", "close")
+        fake.terminate()
+        fake.wait(timeout=5)
+        os.unlink(log)
+
+
+def check_sharing(run, wanted):
+    name = "Ruhemodus beim Bildschirmteilen"
+    if not wanted:
+        report(name, "übersprungen", "nur mit --teilen")
+        return
+    s = state() or {}
+    if s.get("quiet"):
+        report(name, "übersprungen", "Ruhemodus ist ohnehin an")
+        return
+    print("  Starte jetzt eine Bildschirmfreigabe (z. B. im Browser), ich warte bis zu 2 Minuten …", flush=True)
+    s, ok = wait_for(lambda s: s["sharing"], 120)
+    if not check(name + ": Insel merkt die Freigabe", ok, "kein screencast-Ereignis von Hyprland"):
+        return
+    clear_screen()
+    t = f"Beim Teilen {run}"
+    notify(t, "sollte still in den Verlauf")
+    s, _ = wait_for(lambda s: find_note(s, t) is not None)
+    pump(0.8)
+    s = state() or {}
+    check(name + ": normale Meldung still", find_note(s, t) is not None and toast_title(s) != t,
+          f"Pop-up {toast_title(s)!r}")
+    t = f"Kritisch beim Teilen {run}"
+    notify(t, "kommt trotzdem", urgency=2)
+    s, ok = wait_for(lambda s: toast_title(s) == t)
+    check(name + ": kritische Meldung kommt", ok, f"Pop-up {toast_title(s)!r}")
+    clear_screen()
+    print("  Du kannst die Freigabe jetzt beenden.", flush=True)
+    s, ok = wait_for(lambda s: not s["sharing"], 60)
+    check(name + ": Ende der Freigabe erkannt", ok)
+
+
+def check_settings():
+    path = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "omarchy-buddy", "config.json")
+    try:
+        with open(path) as f:
+            on_disk = json.load(f)
+        check("Einstellungen: config.json lesbar", isinstance(on_disk, dict), "keine JSON-Liste erwartet")
+    except (OSError, ValueError) as e:
+        report("Einstellungen: config.json lesbar", "fehler", str(e))
+    s = state() or {}
+    check("Einstellungen: Insel hat sie geladen", isinstance(s.get("settings"), dict) and not s.get("settingsBroken"),
+          "kaputt" if s.get("settingsBroken") else "keine Einstellungen im Zustand")
+
+
+def check_screenshot():
+    # A screenshot sends Hyprland's screencast event for a moment; the island
+    # must not take it for sharing (it would go quiet and veiled).
+    name = "Bildschirmfoto gilt nicht als Teilen"
+    if not shutil.which("grim"):
+        report(name, "übersprungen", "grim fehlt")
+        return
+    subprocess.run(["grim", "-g", "0,0 8x8", "-"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    s, shared = wait_for(lambda s: s["sharing"], 2.0)
+    check(name, not shared)
+
+
+def saved():
+    """What the island and omarchy-buddy-say keep on disk, file → list."""
+    out = {}
+    for name in SAVED:
+        try:
+            with open(os.path.join(STATE_DIR, name)) as f:
+                items = json.load(f)
+        except (OSError, ValueError):
+            items = []
+        out[name] = items if isinstance(items, list) else []
+    return out
+
+
+def check_saved(before):
+    """After the run (#126): no test record on disk, no real one pushed out
+    (unless as many real ones came in meanwhile)."""
+    pump(1.5)  # the island writes 1 s after the last change
+    after = saved()
+    test = lambda i: isinstance(i, dict) and (i.get("app") == TEST_APP or str(i.get("key", "")).startswith("buddy-test-"))  # noqa: E731
+    ident = lambda i: json.dumps(i.get("key") or i.get("time"))  # noqa: E731
+    for name in SAVED:
+        left = [i for i in after[name] if test(i)]
+        # Finished runs from before #173 leave news.json on its next write.
+        old = {ident(i) for i in before[name] if isinstance(i, dict) and not buddy.popup_only(i)}
+        now = {ident(i) for i in after[name] if isinstance(i, dict)}
+        gone, came = old - now, now - old
+        check(f"{name}: keine Testeinträge gespeichert", not left, f"{len(left)} übrig")
+        check(f"{name}: kein echter Eintrag fehlt", len(gone) <= len(came), f"{len(gone)} fehlen")
+
+
+def check_log(log, start_size):
+    if not log:
+        report("kein QML-Fehler im Log", "übersprungen", "kein Log gefunden")
+        return
+    with open(log, errors="replace") as f:
+        text = f.read()
+    problems = buddy_log_problems(text)
+    new = buddy_log_problems(text[start_size:])
+    check("kein QML-Fehler im Log (seit Shell-Start)", not problems, "\n    " + "\n    ".join(problems[-5:]))
+    if problems:
+        check("kein neuer QML-Fehler während des Tests", not new, f"{len(new)} neue")
+
+
+def wait_until_ready(patient):
+    """The user is at the PC, nothing fullscreen, the island at rest. Patient:
+    wait up to two hours for that (after an update the user may be away)."""
+    limit = 7200 if patient else 15
+    end = time.monotonic() + limit
+    while True:
+        s = state() or {}
+        calm = not s.get("paused") and not s.get("sharing") and not s.get("opened") and not s.get("ask") \
+            and s.get("mode") in ("pill", "peek")
+        if calm or time.monotonic() >= end:
+            return s
+        time.sleep(5 if patient else 1)
+
+
+def main():
+    p = argparse.ArgumentParser(description="Live-Test der Insel in der laufenden Shell.")
+    p.add_argument("--teilen", action="store_true", help="auch den Ruhemodus beim Bildschirmteilen prüfen")
+    p.add_argument("--warten", action="store_true", help="erst warten, bis du da bist und die Insel ruhig ist")
+    args = p.parse_args()
+
+    if ipc("omarchy-buddy.test", "ping") != "ok":
+        report("Insel geladen (Test-IPC antwortet)", "fehler", "omarchy-buddy.test antwortet nicht")
+        check_service()
+        return 2
+    report("Insel geladen (Test-IPC antwortet)", "ok")
+    log = shell_log()
+    start_size = os.path.getsize(log) if log else 0
+    run = time.strftime("%H%M%S")
+
+    s = wait_until_ready(args.warten)
+    # Away, fullscreen, a shared screen, a real Claude request or the open view hold pop-ups back by design.
+    held = "du warst weg oder Vollbild" if s.get("paused") else \
+        "der Bildschirm wird gerade geteilt" if s.get("sharing") else \
+        "eine Claude-Rückfrage ist offen" if s.get("ask") else \
+        "die große Ansicht ist offen" if s.get("opened") else ""
+    if held:
+        report("Pop-ups", "übersprungen", held)
+    quiet = s.get("quiet")
+    if quiet:
+        ipc("notifications", "setDnd", "off")
+    before = saved()
+    try:
+        check_service()
+        if not held:
+            check_popups(run)
+            check_actions(run)
+            check_claude(run)
+            check_long_asks(run)
+            check_in_view(run)
+            check_done_popup(run)
+            check_for_you(run)
+            check_feelings(run)
+            check_many_actions(run)
+            check_omarchy_45(run)
+            check_history(run, clear_all=not args.warten)
+        check_omarchy_ipc()
+        check_emotes()
+        check_settings()
+        if not held:
+            check_settings_page()
+            check_player()
+            check_spotify_key()
+            check_screenshot()
+            check_sharing(run, args.teilen)
+    finally:
+        ipc("omarchy-buddy.test", "testForget")
+        ipc("omarchy-buddy.test", "testSettings", "")
+        if quiet:
+            ipc("notifications", "setDnd", "on")
+    check_saved(before)
+    check_log(log, start_size)
+
+    failed = [r for r in results if r[1] == "fehler"]
+    skipped = [r for r in results if r[1] == "übersprungen"]
+    print(f"\n{len(results) - len(failed) - len(skipped)} ok, {len(failed)} Fehler, {len(skipped)} übersprungen")
+    if not failed:
+        return 0
+    return 3 if all("(dabei: " in r[2] for r in failed) else 1  # "(dabei: …)" comes from disturbed()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

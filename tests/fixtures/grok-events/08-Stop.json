@@ -1,0 +1,16 @@
+{
+  "hookEventName": "stop",
+  "sessionId": "01a18d09-ddab-7d03-a5c3-5e0a87b5a0be",
+  "cwd": "/home/user/projekt",
+  "workspaceRoot": "/home/user/projekt",
+  "timestamp": "2026-10-30T13:39:56.565257810+00:00",
+  "transcriptPath": "/home/user/.grok/sessions/%2Fhome%2Fuser%2Fprojekt/01a18d09-ddab-7d03-a5c3-5e0a87b5a0be/updates.jsonl",
+  "permissionMode": "default",
+  "reason": "shutdown",
+  "stopHookActive": false,
+  "hook_event_name": "Stop",
+  "session_id": "01a18d09-ddab-7d03-a5c3-5e0a87b5a0be",
+  "transcript_path": "/home/user/.grok/sessions/%2Fhome%2Fuser%2Fprojekt/01a18d09-ddab-7d03-a5c3-5e0a87b5a0be/updates.jsonl",
+  "permission_mode": "default",
+  "stop_hook_active": false
+}

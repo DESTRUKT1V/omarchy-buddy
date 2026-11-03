@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A stand-in for hyprctl (#162) in tests/live and tests/gallery, so Spotify's
+# shortcut never reaches the user's Spotify: one Spotify window 0x162, every
+# dispatch appended to LOG; with --fail it answers like Hyprland when the
+# window is gone.
+#
+#   tests/fake-hyprctl LOG [--fail] clients -j | dispatch ARG
+log=$1; shift
+fail=0
+[ "${1:-}" = --fail ] && { fail=1; shift; }
+case ${1:-} in
+  clients) echo '[{"address":"0x162","class":"spotify","initialClass":"spotify","title":"Buddy-Test - Ein Lied zum Testen"}]' ;;
+  dispatch)
+    printf '%s\n' "${2:-}" >>"$log"
+    if ((fail)); then echo "warning: =[C]:-1: send_shortcut: window not found"; else echo ok; fi ;;
+esac

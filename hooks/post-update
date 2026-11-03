@@ -1,0 +1,18 @@
+#!/bin/bash
+# Omarchy post-update hook; install.sh links it to
+# ~/.config/omarchy/hooks/post-update.d/omarchy-buddy-check. Starts
+# bin/omarchy-buddy-check in the background, which waits for the update (and
+# the shell restart at its end) to finish, then tests the island and
+# reports through O-Morchy. The update itself never waits for it.
+
+# The omarchy-update this runs under (omarchy-update → omarchy-hook → here).
+update=""
+pid=$PPID
+while ((pid > 1)); do
+  if [[ $(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null) == *omarchy-update* ]]; then update=$pid; break; fi
+  pid=$(awk '{print $4}' /proc/$pid/stat 2>/dev/null || echo 1)
+done
+
+here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+setsid -f "$here/../bin/omarchy-buddy-check" --nach-update "$update" </dev/null >/dev/null 2>&1
+exit 0

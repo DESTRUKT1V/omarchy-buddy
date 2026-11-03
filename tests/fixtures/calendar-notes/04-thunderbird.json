@@ -1,0 +1,23 @@
+{
+  "quelle": "nach Quelle gebaut: comm-central calendar/base/src/CalAlarmMonitor.sys.mjs onNotification (nur mit calendar.notifications.times), mozilla toolkit/system/gnome/nsAlertsIconListener.cpp; nicht von einer neuen Mail zu unterscheiden",
+  "app": "Thunderbird",
+  "icon": "",
+  "summary": "Teammeeting",
+  "body": "",
+  "actions": [
+    "default",
+    "Activate"
+  ],
+  "hints": {
+    "desktop-entry": "thunderbird",
+    "suppress-sound": false,
+    "urgency": 1
+  },
+  "timeout": -1,
+  "erwartet": {
+    "kind": "mail",
+    "sender": "Thunderbird",
+    "title": "Teammeeting",
+    "body": ""
+  }
+}

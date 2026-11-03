@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Dauerlauf: Speicher und CPU der Omarchy-Shell (mit der Insel) über Stunden.
+
+    tests/dauerlauf [--stunden 24] [--intervall 60] [--fuellen 30] [--karte NR]
+
+Misst jede Minute RSS, CPU-Zeit, Threads und offene Dateien des
+quickshell-Prozesses nach ~/.local/state/omarchy-buddy/dauerlauf/<start>.csv.
+Ein Shell-Neustart (neue PID) beginnt einen neuen Abschnitt.
+
+Last, ohne Pop-ups:
+  - am Anfang --fuellen leise Meldungen (-u low, App „Dauerlauf“): damit hält
+    die Insel ihre 30 lebenden Notification-Objekte. Im Verlauf eine Zeile
+    „Dauerlauf“, die du danach mit × wegnimmst.
+  - alle 5 Minuten 20 leise Meldungen mit demselben
+    x-canonical-private-synchronous-Tag: jede ersetzt die vorige, es entstehen
+    und gehen also laufend Objekte, im Verlauf bleibt nur eine.
+  - alle 5 Minuten eine kurze Claude-Sitzung über den echten Hook (Prompt,
+    20 Werkzeuge, Stop, SessionEnd; unter 20 s, also kein „Fertig“-Pop-up).
+O-Morchy läuft dabei wie immer (die CPU-Zeit enthält ihn).
+
+Am Ende: Zusammenfassung als <start>.txt, mit --karte auch als Kommentar in diese Board-Karte (vk).
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+
+TICKS = os.sysconf("SC_CLK_TCK")
+PAGE = os.sysconf("SC_PAGE_SIZE")
+
+
+def shell_pid():
+    try:
+        out = subprocess.run(["pgrep", "-n", "-f", "quickshell.*omarchy/shell"],
+                             capture_output=True, text=True).stdout.split()
+        return int(out[0]) if out else None
+    except Exception:
+        return None
+
+
+def sample(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        cpu = (int(fields[11]) + int(fields[12])) / TICKS
+        threads = int(fields[17])
+        with open(f"/proc/{pid}/statm") as f:
+            rss = int(f.read().split()[1]) * PAGE / 1048576
+        fds = len(os.listdir(f"/proc/{pid}/fd"))
+        return cpu, rss, threads, fds
+    except Exception:
+        return None
+
+
+def notify(args):
+    subprocess.run(["notify-send", "-u", "low", "-a", "Dauerlauf"] + args,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+
+
+def fill(n):
+    for i in range(n):
+        notify(["Dauerlauf", f"Meldung {i + 1} von {n} (nur Verlauf)"])
+        time.sleep(0.2)
+
+
+def churn(n=20):
+    for i in range(n):
+        notify(["-h", "string:x-canonical-private-synchronous:dauerlauf", "Dauerlauf-Wechsel", f"{i + 1}"])
+        time.sleep(0.1)
+
+
+def claude_run(n):
+    """A short Claude session through the real hook, outside this process tree
+    (systemd-run, like tests/live), so it finds no terminal to watch."""
+    hook = os.path.expanduser("~/.local/bin/omarchy-buddy-hook")
+    sid = f"dauerlauf-{n}"
+    events = [{"hook_event_name": "UserPromptSubmit", "prompt": f"Dauerlauf {n}"}]
+    for i in range(20):
+        tool = {"tool_name": "Bash", "tool_input": {"command": f"echo {i}"}}
+        events += [dict(tool, hook_event_name="PreToolUse"), dict(tool, hook_event_name="PostToolUse")]
+    events += [{"hook_event_name": "Stop"}, {"hook_event_name": "SessionEnd", "reason": "other"}]
+    for e in events:
+        e.update(session_id=sid, cwd="/tmp/dauerlauf")
+        try:
+            subprocess.run(["systemd-run", "--user", "--quiet", "--collect", "--pipe", hook],
+                           input=json.dumps(e), text=True, capture_output=True, timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        time.sleep(0.1)
+
+
+def slope(points):
+    """MB pro Stunde, lineare Regression über (Sekunden, MB)."""
+    if len(points) < 3:
+        return 0.0
+    n = len(points)
+    mx = sum(p[0] for p in points) / n
+    my = sum(p[1] for p in points) / n
+    den = sum((p[0] - mx) ** 2 for p in points)
+    return 0.0 if den == 0 else sum((p[0] - mx) * (p[1] - my) for p in points) / den * 3600
+
+
+def summary(rows, hours):
+    segments = {}
+    for r in rows:
+        segments.setdefault(r["pid"], []).append(r)
+    lines = [f"Dauerlauf {hours:g} h: Omarchy-Shell mit Insel, {len(rows)} Messungen, "
+             f"{len(segments)} Shell-Lauf/-Läufe"]
+    for pid, seg in segments.items():
+        span = (seg[-1]["t"] - seg[0]["t"]) / 3600
+        rss = [r["rss"] for r in seg]
+        cpu = []
+        for a, b in zip(seg, seg[1:]):
+            dt = b["t"] - a["t"]
+            if dt > 0:
+                cpu.append((b["cpu"] - a["cpu"]) / dt * 100)
+        cpu_sorted = sorted(cpu) or [0]
+        p95 = cpu_sorted[min(len(cpu_sorted) - 1, int(len(cpu_sorted) * 0.95))]
+        # Anstieg nach der Aufwärmphase (erste Stunde zählt nicht).
+        warm = [(r["t"], r["rss"]) for r in seg if r["t"] - seg[0]["t"] >= 3600]
+        lines.append(
+            f"- PID {pid}, {span:.1f} h: RSS {rss[0]:.0f} → {rss[-1]:.0f} MB (max {max(rss):.0f}), "
+            f"Anstieg nach der 1. Stunde {slope(warm):+.2f} MB/h; "
+            f"CPU Mittel {sum(cpu) / max(1, len(cpu)):.2f} %, 95 % der Minuten unter {p95:.2f} %; "
+            f"Threads {seg[0]['threads']} → {seg[-1]['threads']}, offene Dateien {seg[0]['fds']} → {seg[-1]['fds']}")
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--stunden", type=float, default=24)
+    ap.add_argument("--intervall", type=float, default=60)
+    ap.add_argument("--fuellen", type=int, default=30)
+    ap.add_argument("--karte", default="")
+    a = ap.parse_args()
+
+    out_dir = os.path.expanduser("~/.local/state/omarchy-buddy/dauerlauf")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M")
+    csv_path = os.path.join(out_dir, stamp + ".csv")
+    rows = []
+    start = time.time()
+    end = start + a.stunden * 3600
+    next_churn = start + 300
+
+    if a.fuellen:
+        fill(a.fuellen)
+    with open(csv_path, "w", buffering=1) as csv:
+        csv.write("zeit,pid,cpu_s,rss_mb,threads,fds\n")
+        while time.time() < end:
+            now = time.time()
+            if now >= next_churn:
+                churn()
+                claude_run(int(now))
+                next_churn = now + 300
+            pid = shell_pid()
+            s = sample(pid) if pid else None
+            if s:
+                cpu, rss, threads, fds = s
+                rows.append({"t": now, "pid": pid, "cpu": cpu, "rss": rss, "threads": threads, "fds": fds})
+                csv.write(f"{int(now)},{pid},{cpu:.2f},{rss:.1f},{threads},{fds}\n")
+            time.sleep(max(1, a.intervall - (time.time() - now)))
+
+    text = summary(rows, a.stunden) + f"\nRohdaten: {csv_path}"
+    with open(os.path.join(out_dir, stamp + ".txt"), "w") as f:
+        f.write(text + "\n")
+    print(text)
+    if a.karte:
+        subprocess.run(["vk", "PUT", f"/tasks/{a.karte}/comments", json.dumps({"comment": text.replace("\n", "<br>")})],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

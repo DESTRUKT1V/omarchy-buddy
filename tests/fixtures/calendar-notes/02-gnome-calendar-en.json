@@ -1,0 +1,25 @@
+{
+  "quelle": "aufgenommen: evolution-alarm-notify (evolution-data-server 3.62.1) gegen einen Ersatz-Server, LANG=en_US.UTF-8, erfundener Termin",
+  "app": "evolution-alarm-notify",
+  "icon": "",
+  "summary": "Reminders",
+  "body": "Teammeeting\nSat 10/31/2026 02:43 PM (30 minutes) Raum A1",
+  "actions": [
+    "default",
+    "",
+    "app.show-reminders",
+    "Reminders"
+  ],
+  "hints": {
+    "desktop-entry": "org.gnome.Evolution-alarm-notify",
+    "urgency": 1,
+    "image-path": "appointment-soon"
+  },
+  "timeout": -1,
+  "erwartet": {
+    "kind": "event",
+    "sender": "Reminders",
+    "title": "Teammeeting",
+    "body": "Sat 10/31/2026 02:43 PM (30 minutes) Raum A1"
+  }
+}

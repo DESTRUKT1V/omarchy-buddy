@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+# Hand a news item to the omarchy-buddy island (Omarchy shell plugin).
+#
+#   omarchy-buddy-say [--source S] [--level L] [--url U] [--key K] TITLE [BODY]
+#
+#   --source  claude | codex | gemini | crush | grok | cursor-agent | copilot | opencode | pi-agent | omp | agy | qwen | kimi | devin | commandcode | kiro-cli | muse | system | terminal | coding | kuma | github | buddy   (default: buddy;
+#             mochi, its old name, still works)
+#   --level   info | good | warn | error                      (default: info)
+#   --url     opened when the item is clicked
+#   --key     skip the item if one with the same key is already listed
+#   --window  Hyprland window address to focus when the item is clicked
+#   --orca    the item belongs to a Claude session in an Orca terminal
+#   --orca-terminal, --orca-pane   that terminal's handle and pane key (to jump there)
+#   --watched The user is looking at the session right now: no pop-up
+#   --quiet   only into the history, never a pop-up
+#   --popup-only  only a pop-up, never into the history or unread (a finished
+#             agent run, #173); the item leaves news.json after a minute
+#
+# Items land in ~/.local/state/omarchy-buddy/news.json (newest 100 kept;
+# with "Verlauf speichern: gar nicht" in $XDG_RUNTIME_DIR/omarchy-buddy); the
+# island watches that file, pops new items up for a few seconds and lists them
+# in its history. The folder and its files are the user's alone (700/600):
+# notifications and news can hold private messages.
+
+import argparse
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+from buddy import say  # noqa: E402
+
+
+def action(text):
+    """What a click does inside the island: "updates" or "crash:PID" (IslandLogic.actionCommand)."""
+    if text and text != "updates" and not re.fullmatch(r"crash:[0-9]+", text):
+        raise argparse.ArgumentTypeError(f"invalid action: {text}")
+    return text
+
+
+def main():
+    p = argparse.ArgumentParser(description="Hand a news item to the O-Morchy island.")
+    p.add_argument("--source", default="buddy", choices=["claude", "codex", "gemini", "crush", "grok", "cursor-agent", "copilot", "opencode", "pi-agent", "omp", "agy", "qwen", "kimi", "devin", "commandcode", "kiro-cli", "muse", "system", "terminal", "coding", "kuma", "github", "buddy", "mochi"],
+                   metavar="{claude,system,coding,buddy}")  # mochi: old name
+    p.add_argument("--level", default="info", choices=["info", "good", "warn", "error"])
+    p.add_argument("--url", default="")
+    p.add_argument("--key", default="")
+    p.add_argument("--window", default="", help=argparse.SUPPRESS)
+    p.add_argument("--orca", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--orca-terminal", default="", help=argparse.SUPPRESS)
+    p.add_argument("--orca-pane", default="", help=argparse.SUPPRESS)
+    p.add_argument("--watched", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--popup-only", action="store_true")
+    p.add_argument("--private", action="store_true", help=argparse.SUPPRESS)  # body holds a prompt or command
+    p.add_argument("--action", default="", type=action, help=argparse.SUPPRESS)  # the feed's; tests/gallery
+    p.add_argument("title")
+    p.add_argument("body", nargs="?", default="")
+    a = p.parse_args()
+    say(a.title, a.body, a.source, a.level, a.url, a.key, a.window, a.orca,
+        a.orca_terminal, a.orca_pane, a.watched, a.quiet, a.private, a.action, a.popup_only)
+
+
+if __name__ == "__main__":
+    main()

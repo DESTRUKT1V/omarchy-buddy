@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Is the island there after an Omarchy update, and does it hold the
+# notification bus? hooks/post-update starts this in the background.
+#
+#   omarchy-buddy-check                    check now (the user at the PC)
+#   omarchy-buddy-check --nach-update PID  first wait for that omarchy-update to
+#                                      finish (it restarts the shell at the end)
+#   omarchy-buddy-check --rueckfall        only step 1, quiet while all is well
+#                                      (omarchy-buddy-feed, every 15 minutes);
+#                                      the whole check again after a disturbed live test
+#
+# 1. Rückfall: the shell runs, but after a while nobody holds
+#    org.freedesktop.Notifications (the island did not load) →
+#    omarchy-buddy-setup --remove (Omarchy's notifications back, Claude's
+#    hooks out, the shell restarts), and notify-send says so.
+# 2. After an update the bar's indicator list follows Omarchy's (setup --indicators).
+# 3. Otherwise the contract tests (tests/contract.test.js) and the live test
+#    (tests/live --warten, only with "updateCheck": true in
+#    ~/.config/omarchy-buddy/config.json after an update), the result as a news item from O-Morchy.
+#    Did the live test after an update fail only while something real was on
+#    the island (tests/live exit 3: a real request, a real pop-up, away or
+#    fullscreen), no news item: check.gestoert in the state folder counts it,
+#    and the next --rueckfall runs the check again. The third disturbed run in
+#    a row reports.
+#
+# Everything goes to ~/.local/state/omarchy-buddy/check.log.
+set -uo pipefail
+umask 077  # the log and backups are the user's alone, like the rest of the state folder
+
+repo=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-buddy
+shell_json=$(realpath -m "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json")  # a symlink (dotfiles) stays a symlink
+export OMARCHY_PATH=${OMARCHY_PATH:-/usr/share/omarchy}
+PATH=$HOME/.local/bin:$OMARCHY_PATH/bin:$PATH
+say=$repo/bin/omarchy-buddy-say
+t() { python3 "$repo/lib/texts.py" "$@"; }  # texts in the user's language
+
+has_service() {
+  busctl --user call org.freedesktop.Notifications /org/freedesktop/Notifications \
+    org.freedesktop.Notifications GetServerInformation >/dev/null 2>&1
+}
+shell_up() { [[ $(omarchy-shell shell ping 2>/dev/null) == ok ]]; }
+
+# Every 15 minutes: no log and no waiting while the bus is held or no shell runs,
+# unless a disturbed live test waits for its next try.
+retry_file=$state_dir/check.gestoert
+fallback_only=0 retry=0
+if [[ ${1-} == --rueckfall ]]; then
+  if [[ -e $retry_file ]] && has_service && shell_up; then
+    # tests/live --warten may wait two hours for a quiet moment: not inside the feed's run.
+    if [[ -z ${OMARCHY_BUDDY_CHECK_DETACHED-} ]]; then
+      OMARCHY_BUDDY_CHECK_DETACHED=1 setsid -f "$0" --rueckfall </dev/null >/dev/null 2>&1
+      exit 0
+    fi
+    retry=1
+  elif has_service || ! shell_up; then
+    exit 0
+  else
+    fallback_only=1
+  fi
+fi
+
+mkdir -p "$state_dir"
+exec 9>"$state_dir/check.lock"
+flock -n 9 || { echo "omarchy-buddy-check is already running" >&2; exit 0; }
+log=$state_dir/check.log
+exec >"$log" 2>&1
+echo "omarchy-buddy-check $(date '+%F %T') from $repo"
+
+after_update=0
+if [[ ${1-} == --nach-update ]]; then
+  after_update=1
+  update_pid=${2-}
+  # Up to three hours (reboot prompts, AUR builds …).
+  for ((i = 0; i < 2160; i++)); do
+    [[ -n $update_pid ]] && kill -0 "$update_pid" 2>/dev/null || break
+    sleep 5
+  done
+  echo "Update done $(date '+%T')"
+fi
+
+wait_until() {  # seconds, command…
+  local limit=$1; shift
+  for ((i = 0; i < limit; i++)); do "$@" && return 0; sleep 1; done
+  return 1
+}
+
+if ! wait_until 120 shell_up; then
+  echo "The shell does not answer – nothing to do, without a shell Omarchy's plugin does not help either."
+  exit 0
+fi
+# Plugins load after the shell answers.
+if ! wait_until 30 has_service; then
+  echo "No notification server – falling back to Omarchy's plugin."
+  reason=$(grep -ahE '\s(WARN|ERROR)\s.*omarchy-buddy' \
+             "$(command ls -td "${XDG_RUNTIME_DIR:-/run/user/$UID}"/quickshell/by-id/*/ | head -1)log.log" 2>/dev/null |
+           grep -v qmlscanner | tail -1 | sed 's/^.*omarchy-buddy[^ ]*: *//' | cut -c1-200)
+  echo "Reason: ${reason:-unknown}"
+  # Everything back as before the setup (hooks, status line, shell.json, timer,
+  # links); it restarts the shell. Back to the island: omarchy-buddy-setup.
+  body=check.fallback.body
+  if ! "$repo/bin/omarchy-buddy-setup" --remove; then
+    # It stops before changing anything (a broken settings.json …): at least
+    # Omarchy's notifications back, the hooks stay.
+    body=check.fallback.partial
+    cp -p "$shell_json" "$shell_json.before-fallback-$(date +%Y%m%d-%H%M%S)"
+    tmp=$(mktemp "$shell_json.XXXXXX")
+    jq '.disabledPlugins = ((.disabledPlugins // []) - ["omarchy.notifications"])
+        | if (.plugins | type) == "array" then .plugins |= map(select((type == "object" and .id == "io.github.destrukt1v.omarchy-buddy") | not))
+          else . end' "$shell_json" >"$tmp" &&
+      chmod --reference="$shell_json" "$tmp" && mv "$tmp" "$shell_json"
+    omarchy-restart-shell
+  fi
+  wait_until 30 has_service
+  notify-send -u critical -a "Omarchy-Buddy" "$(t check.fallback.title)" \
+    "$(t $body reason="${reason:+$(t check.fallback.reason reason="$reason")}" setup="$repo/bin/omarchy-buddy-setup" log="$log")"
+  exit 0
+fi
+((fallback_only)) && { echo "The notification server is back."; exit 0; }
+
+# Omarchy can change its bar indicators; the list the setup wrote follows
+# (omarchy-buddy-setup --indicators, restarts the shell only on a change).
+((after_update)) && "$repo/bin/omarchy-buddy-setup" --indicators
+
+problems=()
+if command -v node >/dev/null; then
+  if ! node --test "$repo/tests/contract.test.js"; then problems+=("$(t check.contract)"); fi
+fi
+
+config=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-buddy/config.json
+if ((after_update || retry)) && [[ $(jq -r '.updateCheck == true' "$config" 2>/dev/null) != true ]]; then
+  echo "Live test off (updateCheck not true in config.json)"
+  live=0
+else
+  "$repo/tests/live" --warten
+  live=$?
+fi
+summary=$(grep -E '^[0-9]+ ok, ' "$log" | tail -1)
+failed=$(grep -E '^✗ ' "$log" | sed 's/^✗ //; s/:.*//' | head -3 | paste -sd ',' | sed 's/,/, /g')
+((live == 3 && !after_update && !retry)) && live=1  # you at the PC: no waiting for another try
+((live == 1)) && problems+=("${failed:-$(t check.live)}")
+((live == 2)) && problems+=("$(t check.noAnswer)")
+if ((live == 3)); then
+  tries=$(( $(tr -cd 0-9 2>/dev/null <"$retry_file") + 1 ))
+  if ((tries < 3 && ${#problems[@]} == 0)); then
+    echo "$tries" >"$retry_file"
+    echo "Live test disturbed ($tries of 3), no news item – again at the next omarchy-buddy-check --rueckfall"
+    exit 0
+  fi
+  problems+=("$(t check.disturbed failed="${failed:-$(t check.live)}")")
+fi
+rm -f "$retry_file"
+
+if ((${#problems[@]})); then
+  "$say" --source system --level error "$(t check.bad.title)" \
+    "$(t check.bad.body problems="$(IFS=';'; echo "${problems[*]}" | sed 's/;/; /g')" log="$log")"
+else
+  "$say" --source system --level good "$(t check.good.title)" "${summary:-$(t check.contractOk)}"
+fi
+exit 0

@@ -1,0 +1,30 @@
+{
+  "quelle": "nach Quelle gebaut: akonadi-calendar reminder-daemon/alarmnotification.cpp, kalendarac.notifyrc, knotifications notifybypopup.cpp (KOrganizer, Merkuro)",
+  "app": "Calendar Reminders",
+  "icon": "view-calendar-upcoming",
+  "summary": "Teammeeting",
+  "body": "Event starts at 2:42 PM",
+  "actions": [
+    "default",
+    "View",
+    "1",
+    "Remind in 5 mins",
+    "2",
+    "Remind later...",
+    "3",
+    "Dismiss"
+  ],
+  "hints": {
+    "desktop-entry": "org.kde.kalendarac",
+    "x-kde-appname": "kalendarac",
+    "x-kde-eventId": "alarm",
+    "urgency": 1
+  },
+  "timeout": 0,
+  "erwartet": {
+    "kind": "event",
+    "sender": "Calendar Reminders",
+    "title": "Teammeeting",
+    "body": "Event starts at 2:42 PM"
+  }
+}

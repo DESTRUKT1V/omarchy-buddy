@@ -1,0 +1,15 @@
+{
+  "event": "PermissionRequest",
+  "hook_event_name": "PermissionRequest",
+  "session_id": "213f22c0-a048-488d-871d-1756449d7f4c",
+  "cwd": "/home/user/projekt",
+  "tool_name": "bash",
+  "tool_input": {
+    "description": "Test",
+    "command": "rm -rf neu.txt",
+    "working_dir": "",
+    "run_in_background": false,
+    "auto_background_after": 0
+  },
+  "tool_use_id": "call_1"
+}

@@ -1,0 +1,9 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/user/.claude/projects/-home-user-projekt/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/user/projekt",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Arbeite diese Schritte nacheinander ab, ohne nachzufragen, und mach weiter, auch wenn ein Schritt abgelehnt wird oder fehlschlägt: 1. Lies notiz.txt. 2. Führe `cat fehlt.txt` aus. 3. Starte mit dem Agent-Werkzeug einen Subagenten (subagent_type general-purpose), der `rm notiz.txt` ausführt. 4. Führe selbst `rm notiz.txt` aus. Antworte am Ende mit einem Satz."
+}

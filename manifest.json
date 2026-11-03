@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.destrukt1v.omarchy-buddy",
+  "name": "Omarchy-Buddy",
+  "version": "1.2.0",
+  "author": "SWG DESTRUKTIV",
+  "description": "O-Morchy, a pixel buddy in the bar beside the clock, with an island under it: Claude Code sessions (allow, deny, answer, jump to the terminal), news and every desktop notification in one place. Set up with bin/omarchy-buddy-setup.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "shell/Buddy.qml",
+    "barWidget": "shell/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarchy-Buddy",
+    "description": "O-Morchy with Claude Code sessions, news and notifications",
+    "category": "Status",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
