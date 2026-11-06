@@ -13,10 +13,11 @@ _omarchy_buddy_precmd() {
   if [[ -n $_omarchy_buddy_start ]] && (( SECONDS - _omarchy_buddy_start >= 60 )); then
     local took=$(( SECONDS - _omarchy_buddy_start )) cmd=$_omarchy_buddy_cmd
     # A subshell that starts it in the background (no job number, no "done");
-    # bash reads the command from its history there.
+    # bash reads the command from its history there. The command goes on
+    # stdin (printf is a builtin): other users can read /proc/*/cmdline.
     ( { [[ -n $BASH_VERSION ]] && cmd=$(HISTTIMEFORMAT= history 1 | sed 's/^ *[0-9]*\*\? *//')
         [[ -x $HOME/.local/bin/omarchy-buddy-hook ]] &&
-          "$HOME/.local/bin/omarchy-buddy-hook" --command "$s" "$took" "$$" "$cmd"; } >/dev/null 2>&1 & )
+          printf '%s' "$cmd" | "$HOME/.local/bin/omarchy-buddy-hook" --command "$s" "$took" "$$"; } >/dev/null 2>&1 & )
   fi
   _omarchy_buddy_start=
   return $s

@@ -38,12 +38,12 @@
 #   omarchy-buddy-hook --prune    drop sessions whose claude process is gone and
 #                                requests whose hook is gone
 #   omarchy-buddy-hook --decide SESSION REQUEST allow|always|deny|auto
-#   omarchy-buddy-hook --decide SESSION REQUEST revise TEXT   plan: keep planning
-#   omarchy-buddy-hook --answer SESSION REQUEST '{"question": "answer", …}'
+#   omarchy-buddy-hook --decide SESSION REQUEST revise <TEXT   plan: keep planning
+#   omarchy-buddy-hook --answer SESSION REQUEST <'{"question": "answer", …}'
 #   omarchy-buddy-hook --decide SESSION focus     stop all waits of the session
 #   omarchy-buddy-hook --orca-goto TERMINAL PANE   show that Orca pane
 #   omarchy-buddy-hook --end SESSION   end a (forgotten) session: SIGTERM to its claude (codex)
-#   omarchy-buddy-hook --command STATUS SECONDS SHELL_PID COMMAND   a long terminal command ended (lib/long-commands.sh)
+#   omarchy-buddy-hook --command STATUS SECONDS SHELL_PID <COMMAND   a long terminal command ended (lib/long-commands.sh)
 
 import fcntl
 import json
@@ -1092,9 +1092,14 @@ def report_denied(event):
         detail = reason = ""
     body = (f"{tool}: {detail}" if detail else tool) + (f" – {reason}" if reason else "")
     private = ["--private"] if detail or reason else []
+    say_private([buddy.SAY, "--source", "claude", "--level", "warn", "--quiet", *private], t("blocked", name=name), body)
+
+
+def say_private(args, title, body):
+    """omarchy-buddy-say with title and body on stdin: they can hold the
+    user's prompt or command, and other users can read /proc/*/cmdline (#219)."""
     import subprocess
-    subprocess.run([buddy.SAY, "--source", "claude", "--level", "warn", "--quiet", *private,
-                    t("blocked", name=name), body], timeout=5)
+    subprocess.run(args + ["--stdin"], input=json.dumps({"title": title, "body": body}), text=True, timeout=5)
 
 
 def report_done(session_id, error):
@@ -1135,8 +1140,7 @@ def report_done(session_id, error):
         free = limit_free_at() if error == t("error.rate_limit") else ""
         hint = t("free.at", time=free) if free else error_hint(error)
         body = " ".join(x for x in (hint, quoted) if x) or body
-    import subprocess
-    subprocess.run(args + [title, body], timeout=5)
+    say_private(args, title, body)
 
 
 # Programs whose runs their own hooks report already (#168): a terminal
@@ -1285,19 +1289,23 @@ def main():
         prune()
     elif args[:1] == ["--decide"] and len(args) == 4 and args[3] in ("allow", "always", "deny", "auto"):
         decide(args[1], args[2], {"decision": args[3]})
-    elif args[:1] == ["--decide"] and len(args) == 5 and args[3] == "revise":
-        decide(args[1], args[2], {"decision": "revise", "text": args[4][:4000]})
+    # The user's words (plan feedback, answers, a terminal command) come on
+    # stdin, never as arguments: other users can read /proc/*/cmdline (#219).
+    elif args[:1] == ["--decide"] and len(args) == 4 and args[3] == "revise":
+        decide(args[1], args[2], {"decision": "revise", "text": sys.stdin.read()[:4000]})
     elif args[:1] == ["--decide"] and len(args) == 3 and args[2] == "focus":
         decide(args[1], "*", {"decision": "focus"})
-    elif args[:1] == ["--answer"] and len(args) == 4:
-        answers = json.loads(args[3])
+    elif args[:1] == ["--answer"] and len(args) == 3:
+        answers = json.loads(sys.stdin.read())
         if isinstance(answers, dict):
             decide(args[1], args[2], {"answers": answers})
     elif args[:1] == ["--end"] and len(args) == 2:
         end_session(args[1])
     elif args[:1] == ["--orca-goto"] and len(args) == 3:
         orca_goto(args[1], args[2])
-    elif args[:1] == ["--command"] and len(args) == 5:
+    elif args[:1] == ["--command"] and len(args) == 4:
+        report_command(*args[1:], sys.stdin.read())
+    elif args[:1] == ["--command"] and len(args) == 5:  # a terminal opened before 1.2.1
         report_command(*args[1:])
     elif args and args != ["--codex"] and not (args[:1] == ["--agent"] and len(args) in (2, 3) and args[1] in OTHER_AGENTS):
         # A call from the island that does not fit (an empty request id

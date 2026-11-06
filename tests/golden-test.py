@@ -112,14 +112,15 @@ class Hook:
         for n in sorted(os.listdir(decide)) if os.path.isdir(decide) else []:
             self.out.append(f"-- decide/{n}\n" + slurp(os.path.join(decide, n)))
 
-    def run(self, title, *args, event=None):
-        r = subprocess.run([*ALONE, HOOK, *args], input=json.dumps(event) if event is not None else "",
+    def run(self, title, *args, event=None, text=""):
+        r = subprocess.run([*ALONE, HOOK, *args], input=json.dumps(event) if event is not None else text,
                            env=self.env, capture_output=True, text=True, timeout=60, cwd=REPO)
         self.out.append(f"== {title}: exit {r.returncode}\n-- stdout\n{r.stdout}-- stderr\n{r.stderr}")
         self.files(title)
 
     def ask(self, title, event, answer, *args):
-        """A PermissionRequest; answer(request) gives the island's call."""
+        """A PermissionRequest; answer(request, sid) gives the island's call:
+        its arguments, or (arguments, stdin)."""
         sid = event["session_id"]
         os.makedirs(self.path(), exist_ok=True)
         open(self.path("island"), "w").close()  # the island lives: the hook waits for it
@@ -136,7 +137,9 @@ class Hook:
             time.sleep(0.05)
         self.files(title + " (wartet)")
         if request:
-            subprocess.run([*ALONE, HOOK, *answer(request, sid)], env=self.env, capture_output=True, timeout=10)
+            call = answer(request, sid)
+            argv, text = call if isinstance(call, tuple) else (call, "")
+            subprocess.run([*ALONE, HOOK, *argv], input=text, text=True, env=self.env, capture_output=True, timeout=10)
         try:
             out, err = p.communicate(timeout=10)
         except subprocess.TimeoutExpired:
@@ -154,12 +157,16 @@ def island(request, sid):
     if request["kind"] == "question":
         answers = {q["question"]: [o["label"] for o in q["options"][:2 if q["multiSelect"] else 1]]
                    for q in request["questions"]}
-        return ["--answer", sid, request["id"], json.dumps(answers)]
+        return ["--answer", sid, request["id"]], json.dumps(answers)
     return ["--decide", sid, request["id"], "auto" if request["kind"] == "plan" else "allow"]
 
 
-def decide(word, *rest):
-    return lambda request, sid: ["--decide", sid, request["id"], word, *rest]
+def decide(word, text=None):
+    """text: the plan feedback, on stdin."""
+    def call(request, sid):
+        argv = ["--decide", sid, request["id"], word]
+        return argv if text is None else (argv, text)
+    return call
 
 
 def recorded_other(hook, folder, *args):
@@ -387,9 +394,9 @@ def built(hook):
                                "options": [{"label": "Rot"}, {"label": "Blau", "description": "kühl"}, {"x": 1}]},
                               {"question": "Tiere?", "multiSelect": True, "options": [{"label": "Hund"}, {"label": "Katze"}]}, "kaputt"]}
     hook.ask("Frage mit falscher Antwort", ev("PermissionRequest", tool_name="AskUserQuestion", tool_input=question),
-             lambda r, s: ["--answer", s, r["id"], json.dumps({"Andere?": "x", "Farbe?": "  "})])
+             lambda r, s: (["--answer", s, r["id"]], json.dumps({"Andere?": "x", "Farbe?": "  "})))
     hook.ask("Frage beantwortet", ev("PermissionRequest", tool_name="AskUserQuestion", tool_input=question),
-             lambda r, s: ["--answer", s, r["id"], json.dumps({"Farbe?": "Blau", "Tiere?": ["Hund", " ", "Katze"]})])
+             lambda r, s: (["--answer", s, r["id"]], json.dumps({"Farbe?": "Blau", "Tiere?": ["Hund", " ", "Katze"]})))
     hook.ask("Frage ohne Fragen", ev("PermissionRequest", tool_name="AskUserQuestion", tool_input={"questions": []}), decide("allow"))
     hook.run("Stop kurz", event=ev("Stop"))
     hook.run("PermissionDenied", event=ev("PermissionDenied", tool_name="Bash", tool_input=bash, reason="  zu\n gefährlich "))
@@ -451,9 +458,9 @@ def cli(hook):
         "ohne": {"updated": now, "requests": []}})
     for word in ("allow", "always", "deny", "auto"):
         hook.run(f"--decide {word}", "--decide", "s1", "1-1000000000000000001", word)
-    hook.run("--decide revise", "--decide", "s1", "1-1000000000000000001", "revise", "  so nicht ")
-    hook.run("--answer", "--answer", "s1", "1-1000000000000000001", '{"Farbe?": ["Rot"]}')
-    hook.run("--answer keine Liste", "--answer", "s1", "1-1000000000000000001", '["x"]')
+    hook.run("--decide revise", "--decide", "s1", "1-1000000000000000001", "revise", text="  so nicht ")
+    hook.run("--answer", "--answer", "s1", "1-1000000000000000001", text='{"Farbe?": ["Rot"]}')
+    hook.run("--answer keine Liste", "--answer", "s1", "1-1000000000000000001", text='["x"]')
     hook.run("--decide fremde Anfrage", "--decide", "s1", "9-1000000000000000009", "allow")
     hook.run("--decide fremde Sitzung", "--decide", "s9", "1-1000000000000000001", "allow")
     hook.run("--decide falsches Wort", "--decide", "s1", "1-1000000000000000001", "vielleicht")

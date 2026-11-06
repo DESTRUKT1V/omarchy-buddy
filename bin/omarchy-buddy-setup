@@ -801,11 +801,15 @@ def default_indicators():
         return KNOWN_DEFAULTS[-1]
 
 
+# Omarchy's bar sections in the order they run (Util.barSections); the
+# record's indicator indices count in this order.
+SECTIONS = ("left", "centerBegin", "center", "centerEnd", "right", "tray")
+
+
 def indicator_entries(config):
     """Every omarchy.indicators entry in the bar, in order."""
-    layout = ((config.get("bar") or {}).get("layout") or {})
-    return [e for section in ("left", "center", "right") for e in layout.get(section) or []
-            if isinstance(e, dict) and e.get("id") == "omarchy.indicators"]
+    sections = dict(named_sections(config))
+    return [e for name in SECTIONS for e in sections.get(name) or [] if entry_id(e) == "omarchy.indicators"]
 
 
 def from_default(items, defaults):
@@ -861,8 +865,9 @@ def renamed(value):
 
 
 def place_widget(config, default_layout):
-    """The bar widget right after Omarchy's clock (at the end of the centre
-    without one), unless it is in the bar already. A bar widget is on while
+    """The bar widget right after Omarchy's clock (at the start of centerEnd
+    when the clock ends the centre box, at the end of the centre without a
+    clock), unless it is in the bar already. A bar widget is on while
     it is in the bar (Omarchy's rule), so it leaves plugins[] (before #182
     the plugin was a service there). A shell.json without a layout gets
     Omarchy's (the bar shows that one then); without Omarchy's at hand the
@@ -879,8 +884,14 @@ def place_widget(config, default_layout):
         bar["layout"] = json.loads(json.dumps(default_layout))
         added = added or "layout"
     if not any(ours(e) for _, section in named_sections(config) for e in section):
-        for _, section in named_sections(config):
+        for name, section in named_sections(config):
             clock = next((i for i, e in enumerate(section) if isinstance(e, dict) and e.get("id") == "omarchy.clock"), None)
+            if clock is not None and name == "center" and clock + 1 == len(section) \
+                    and isinstance(bar["layout"].get("centerEnd"), list):
+                # The clock ends the centre box: in it O-Morchy would push the
+                # clock off centre, so it starts centerEnd (Omarchy's advice).
+                bar["layout"]["centerEnd"].insert(0, {"id": PLUGIN_ID})
+                break
             if clock is not None:
                 section.insert(clock + 1, {"id": PLUGIN_ID})
                 break
@@ -1032,19 +1043,25 @@ def set_weather(config, record, hide):
 
 def show_weather(config, record):
     """Omarchy's weather back between the same neighbours (the one before it,
-    else the one after it), else at the same place."""
+    else the one after it; in its section first, then in any, as Omarchy may
+    have split the centre since, #220), else at the same place."""
     spot = record.pop("weather", None)
     sections = dict(named_sections(config))
     if not isinstance(spot, dict) or not sections \
             or any(entry_id(e) == WEATHER for s in sections.values() for e in s):
         return
-    section = sections.get(spot.get("section")) or sections.get("center") or next(iter(sections.values()))
-    ids = [entry_id(e) for e in section]
-    after, follows, index = spot.get("after"), spot.get("before"), spot.get("index")
-    at = ids.index(after) + 1 if after is not None and after in ids \
-        else ids.index(follows) if follows is not None and follows in ids \
-        else min(index if isinstance(index, int) and index >= 0 else len(section), len(section))
-    section.insert(at, spot["entry"] if isinstance(spot.get("entry"), dict) else {"id": WEATHER})
+    entry = spot["entry"] if isinstance(spot.get("entry"), dict) else {"id": WEATHER}
+    home = sections.get(spot.get("section"))
+    ordered = ([home] if home is not None else []) + [s for s in sections.values() if s is not home]
+    for section in ordered:
+        ids = [entry_id(e) for e in section]
+        for neighbour, offset in ((spot.get("after"), 1), (spot.get("before"), 0)):
+            if neighbour is not None and neighbour in ids:
+                section.insert(ids.index(neighbour) + offset, entry)
+                return
+    section = home if home is not None else sections.get("center") or next(iter(sections.values()))
+    index = spot.get("index")
+    section.insert(min(index if isinstance(index, int) and index >= 0 else len(section), len(section)), entry)
 
 
 def arranged(section):

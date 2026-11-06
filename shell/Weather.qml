@@ -44,7 +44,7 @@ Scope {
   function refresh() {
     if (!on || testing || locator.running || fetcher.running) return
     if (!spot) {
-      locator.command = ["sh", "-c", "curl -fsS --max-time 10 \"$1\" || echo offline", "sh", WeatherLogic.locateUrl(place)]
+      locator.command = ["sh", "-c", "curl -fsS --max-time 10 --max-filesize 2M \"$1\" || echo offline", "sh", WeatherLogic.locateUrl(place)]
       locator.running = true
       return
     }
@@ -60,7 +60,8 @@ Scope {
     var keys = told.concat(app.news.items.map(function(i) { return String(i.key || "") }))
     WeatherLogic.severeNews(report, keys, Date.now() / 1000, app.lang).forEach(function(n) {
       told = told.concat([n.key])
-      Quickshell.execDetached([app.repo + "/bin/omarchy-buddy-say", "--level", n.level, "--key", n.key, n.title, n.body])
+      app.runWithInput([app.repo + "/bin/omarchy-buddy-say", "--level", n.level, "--key", n.key, "--stdin"],
+                       JSON.stringify({ title: n.title, body: n.body }))  // the body names the place
     })
   }
 
@@ -68,7 +69,7 @@ Scope {
     if (String(text).trim() === "") return
     found = []
     searchState = "searching"
-    searcher.command = ["curl", "-fsS", "--max-time", "10", WeatherLogic.searchUrl(text, app.lang)]
+    searcher.command = ["curl", "-fsS", "--max-time", "10", "--max-filesize", "2M", WeatherLogic.searchUrl(text, app.lang)]
     searcher.running = true
   }
   function endSearch() { found = []; searchState = "" }

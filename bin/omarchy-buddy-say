@@ -2,6 +2,7 @@
 # Hand a news item to the omarchy-buddy island (Omarchy shell plugin).
 #
 #   omarchy-buddy-say [--source S] [--level L] [--url U] [--key K] TITLE [BODY]
+#   omarchy-buddy-say [options] --stdin <'{"title": …, "body": …}'
 #
 #   --source  claude | codex | gemini | crush | grok | cursor-agent | copilot | opencode | pi-agent | omp | agy | qwen | kimi | devin | commandcode | kiro-cli | muse | system | terminal | coding | kuma | github | buddy   (default: buddy;
 #             mochi, its old name, still works)
@@ -15,6 +16,8 @@
 #   --quiet   only into the history, never a pop-up
 #   --popup-only  only a pop-up, never into the history or unread (a finished
 #             agent run, #173); the item leaves news.json after a minute
+#   --stdin   title and body as JSON on stdin: private text stays out of the
+#             arguments, which other users can read in /proc/*/cmdline
 #
 # Items land in ~/.local/state/omarchy-buddy/news.json (newest 100 kept;
 # with "Verlauf speichern: gar nicht" in $XDG_RUNTIME_DIR/omarchy-buddy); the
@@ -23,6 +26,7 @@
 # notifications and news can hold private messages.
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -54,9 +58,15 @@ def main():
     p.add_argument("--popup-only", action="store_true")
     p.add_argument("--private", action="store_true", help=argparse.SUPPRESS)  # body holds a prompt or command
     p.add_argument("--action", default="", type=action, help=argparse.SUPPRESS)  # the feed's; tests/gallery
-    p.add_argument("title")
+    p.add_argument("--stdin", action="store_true", help="title and body as JSON on stdin")
+    p.add_argument("title", nargs="?")
     p.add_argument("body", nargs="?", default="")
     a = p.parse_args()
+    if a.stdin:
+        data = json.load(sys.stdin)
+        a.title, a.body = str(data.get("title") or ""), str(data.get("body") or "")
+    elif a.title is None:
+        p.error("the following arguments are required: title")
     say(a.title, a.body, a.source, a.level, a.url, a.key, a.window, a.orca,
         a.orca_terminal, a.orca_pane, a.watched, a.quiet, a.private, a.action, a.popup_only)
 

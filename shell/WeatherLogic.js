@@ -65,10 +65,10 @@ function sources(place, now) {
 }
 
 // One shell run for all of them: each answer, then a separator line
-// (an answer that fails or breaks off leaves only its own part empty).
+// (an answer that fails, breaks off or passes 2 MiB leaves only its own part empty).
 var separator = "\n\u001e\n"
 function fetchCommand(list) {
-  return ["sh", "-c", "for u; do curl -fsS --compressed --max-time 10 \"$u\"; printf '\\n\\036\\n'; done", "sh"]
+  return ["sh", "-c", "for u; do curl -fsS --compressed --max-time 10 --max-filesize 2M \"$u\"; printf '\\n\\036\\n'; done", "sh"]
     .concat(list.map(function(s) { return s.url }))
 }
 

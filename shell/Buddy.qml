@@ -310,6 +310,21 @@ Item {
     Theme.lostKey = ""
   }
 
+  // A command that gets the user's words on stdin, never as an argument:
+  // other users can read /proc/*/cmdline (#219). Gone once it has run.
+  function runWithInput(argv, text) {
+    withInput.createObject(buddy, { command: argv, payload: String(text) }).running = true
+  }
+  Component {
+    id: withInput
+    Process {
+      property string payload
+      stdinEnabled: true
+      onStarted: { write(payload); stdinEnabled = false }
+      onExited: destroy()
+    }
+  }
+
   // The state folder holds private messages: the user's alone, old files
   // and subfolders included (nobody else may read anything in it). The files
   // the shell writes are made first, because a file FileView creates is

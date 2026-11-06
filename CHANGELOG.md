@@ -3,6 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.2.1 – 2026-11-07
+
+Fixes from the review for plugins.omarchy.org (#219), and Omarchy's new bar.
+
+- **Private text stays out of process arguments**, which other users on
+  the computer can read in `/proc/*/cmdline`: answers, plan feedback, the
+  prompt in a finished run's or blocked action's news, a long terminal
+  command and the place of a weather warning now go on stdin.
+  `omarchy-buddy-say --stdin` reads title and body as JSON for your own
+  scripts; TITLE and BODY as arguments still work.
+
+- **Network answers are capped at 2 MiB**: a bigger answer from a status
+  page (Uptime Kuma), GitHub or the weather services counts as broken,
+  the Claude Code changelog is read up to there.
+
+- **Omarchy's new bar sections** (#220): Omarchy's bar now has
+  centerBegin, center and centerEnd. The setup finds Omarchy's indicators
+  in any section (the do-not-disturb button leaves the bar again on new
+  installs), puts O-Morchy right after the clock at the start of centerEnd
+  (the clock stays centred), and puts Omarchy's weather back between its
+  old neighbours in whatever section they are now.
+
 ## 1.2.0 – 2026-11-03
 
 The first public release (github.com/DESTRUKT1V/omarchy-buddy).

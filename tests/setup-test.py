@@ -9,13 +9,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 from testing import check, done, sandbox_env  # noqa: E402
 
 SETUP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "omarchy-buddy-setup")
-OMARCHY = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
+REAL_OMARCHY = os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy"
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "omarchy-shell")
 ID = "io.github.destrukt1v.omarchy-buddy"
+
+
+def fake_omarchy(layout):
+    """Omarchy with a frozen default shell.json (tests/fixtures/omarchy-shell:
+    old.json the bar before Omarchy split its centre, reconstructed from the
+    tests of that time; new.json the split one of 07.11.2026), the rest real."""
+    root = tempfile.mkdtemp(prefix="omarchy-buddy-omarchy-")
+    os.makedirs(os.path.join(root, "config/omarchy"))
+    shutil.copy(os.path.join(FIXTURES, layout + ".json"), os.path.join(root, "config/omarchy/shell.json"))
+    os.symlink(os.path.join(REAL_OMARCHY, "shell"), os.path.join(root, "shell"))
+    return root
+
+
+OMARCHY = fake_omarchy("old")
 
 
 def sandbox(settings=None, shell=None):
     home = tempfile.mkdtemp(prefix="omarchy-buddy-setup-")
-    env = sandbox_env(home)
+    env = sandbox_env(home, OMARCHY_PATH=OMARCHY)
     if settings is not None:
         write(os.path.join(home, ".claude/settings.json"), settings)
     if shell is not None:
@@ -205,7 +220,7 @@ shutil.rmtree(home)
 home, env = sandbox()
 spaced = os.path.join(home, "mit leer")
 os.makedirs(spaced)
-env = sandbox_env(spaced, XDG_RUNTIME_DIR=env["XDG_RUNTIME_DIR"])
+env = sandbox_env(spaced, XDG_RUNTIME_DIR=env["XDG_RUNTIME_DIR"], OMARCHY_PATH=OMARCHY)
 write(os.path.join(spaced, ".claude/settings.json"), {"statusLine": {"type": "command", "command": "cat >/dev/null; echo alte  Zeile"}})
 r = setup(env)
 s = read(os.path.join(spaced, ".claude/settings.json"))
@@ -824,4 +839,74 @@ if shutil.which("omarchy-plugin-validate"):
                        capture_output=True, text=True)
     check("omarchy plugin validate", r.returncode == 0)
 
+# 20. #220: Omarchy's bar since 07.11.2026 (left, centerBegin with the
+#     indicators, center with only the clock, centerEnd, right).
+OLD_OMARCHY, OMARCHY = OMARCHY, fake_omarchy("new")
+NEW_SHELL = read(os.path.join(OMARCHY, "config/omarchy/shell.json"))
+ids = lambda sh, name: [e["id"] for e in sh["bar"]["layout"].get(name, [])]
+home, env = sandbox(SETTINGS, NEW_SHELL)
+shell_path = os.path.join(home, ".config/omarchy/shell.json")
+setup(env)
+sh = read(shell_path)
+check("neue Leiste: Widget gleich nach der Uhr am Anfang von centerEnd, die Uhr bleibt allein in der Mitte",
+      ids(sh, "center") == ["omarchy.clock"] and ids(sh, "centerEnd") == [ID] + ids(NEW_SHELL, "centerEnd"))
+ind = sh["bar"]["layout"]["centerBegin"][0]
+check("neue Leiste: Dnd aus den Anzeigen in centerBegin", "Dnd" not in ind.get("items", ["Dnd"]) and "NightLight" in ind["items"])
+setup(env, "--weather", "on")
+check("neue Leiste: Wetter aus centerEnd", "omarchy.weather" not in ids(read(shell_path), "centerEnd"))
+setup(env, "--weather", "off")
+check("neue Leiste: Wetter zurück an seinen Platz", ids(read(shell_path), "centerEnd") == [ID] + ids(NEW_SHELL, "centerEnd"))
+r = setup(env, "--bar")
+check("neue Leiste: „Leiste ordnen“ bietet nichts an", r.returncode == 0 and r.stdout == "\n")
+setup(env, "--weather", "on")
+setup(env, "--remove")
+check("neue Leiste: Entfernen, shell.json wie vorher", read(shell_path) == NEW_SHELL)
+shutil.rmtree(home)
+
+home, env = sandbox(SETTINGS, {"version": 1, "plugins": []})
+shell_path = os.path.join(home, ".config/omarchy/shell.json")
+setup(env)
+sh = read(shell_path)
+check("neue Leiste ohne Layout: Omarchys mit dem Widget am Anfang von centerEnd",
+      ids(sh, "centerEnd") == [ID] + ids(NEW_SHELL, "centerEnd") and ids(sh, "center") == ["omarchy.clock"])
+setup(env, "--remove")
+check("neue Leiste ohne Layout: Entfernen nimmt sie wieder heraus", read(shell_path) == {"version": 1, "plugins": []})
+shutil.rmtree(home)
+
+# The old id (#209) in the new bar keeps its place.
+home, env = sandbox(SETTINGS, NEW_SHELL)
+shell_path = os.path.join(home, ".config/omarchy/shell.json")
+setup(env)
+want = read(shell_path)
+write(shell_path, json.loads(json.dumps(want).replace(f'"{ID}"', '"omarchy-buddy"')))
+setup(env)
+check("neue Leiste: alte ID bleibt an ihrem Platz in centerEnd", read(shell_path) == want)
+shutil.rmtree(home)
+
+# Set up on the old bar (weather out), then Omarchy's migration splits the
+# user's centre at the clock: the switches and --remove still find their way.
+home, env = sandbox(SETTINGS, DEFAULT_SHELL)
+env["OMARCHY_PATH"] = OLD_OMARCHY
+shell_path = os.path.join(home, ".config/omarchy/shell.json")
+write(os.path.join(home, ".config/omarchy-buddy/config.json"), {"weather": True})
+setup(env)
+sh = read(shell_path)
+center = sh["bar"]["layout"]["center"]
+at = ids(sh, "center").index("omarchy.clock")
+sh["bar"]["layout"] = {"left": sh["bar"]["layout"]["left"], "centerBegin": center[:at], "center": [center[at]],
+                       "centerEnd": center[at + 1:], "right": sh["bar"]["layout"]["right"]}
+write(shell_path, sh)
+env["OMARCHY_PATH"] = OMARCHY
+setup(env, "--weather", "off")
+check("alte Einrichtung, neu aufgeteilt: Wetter zurück zu seinen Nachbarn in centerEnd",
+      ids(read(shell_path), "centerEnd") == [ID, "omarchy.keyboard-layout", "omarchy.weather", "omarchy.system-update"]
+      and ids(read(shell_path), "center") == ["omarchy.clock"])
+setup(env, "--remove")
+sh = read(shell_path)
+check("alte Einrichtung, neu aufgeteilt: Entfernen bringt Dnd zurück, Widget weg",
+      not in_bar(sh) and "items" not in sh["bar"]["layout"]["centerBegin"][0])
+shutil.rmtree(home)
+
+shutil.rmtree(OLD_OMARCHY)
+shutil.rmtree(OMARCHY)
 done()

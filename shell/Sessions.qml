@@ -110,9 +110,11 @@ Scope {
     app.touch()
   }
 
-  // An answer to the waiting hook; the text field closes.
-  function toHook(args) {
-    Quickshell.execDetached([app.hook].concat(args))
+  // An answer to the waiting hook; the text field closes. The user's words
+  // (text) go on stdin (Buddy.runWithInput).
+  function toHook(args, text) {
+    if (text === undefined) Quickshell.execDetached([app.hook].concat(args))
+    else app.runWithInput([app.hook].concat(args), text)
     typingKey = ""
     app.touch()
   }
@@ -120,7 +122,7 @@ Scope {
   function decide(session, request, decision) { toHook(["--decide", session.id, request.id, decision]) }
 
   // A plan goes back with the user's words; Claude keeps planning.
-  function revisePlan(session, request, text) { toHook(["--decide", session.id, request.id, "revise", String(text || "")]) }
+  function revisePlan(session, request, text) { toHook(["--decide", session.id, request.id, "revise"], String(text || "")) }
 
   // Omarchy's default agent (Omarchy 4.0.6: SUPER+SHIFT+A starts it). Hidden
   // without one or without Omarchy's menu; the menu sets it (and starts it).
@@ -165,7 +167,7 @@ Scope {
 
   function sendAnswers(ask, sel) {
     var payload = SessionLogic.answerPayload(ask.request.questions, sel || selection(ask))
-    toHook(["--answer", ask.session.id, ask.request.id, JSON.stringify(payload)])
+    toHook(["--answer", ask.session.id, ask.request.id], JSON.stringify(payload))
   }
 
   // A forgotten session: SIGTERM to its claude, then --prune (the hook checks the pid).

@@ -21,7 +21,8 @@ outputs = {}  # first word of the command → (exit code, stdout)
 feed.say = lambda title, body="", **kw: said.append(dict(kw, title=title, body=body))
 feed.run = lambda cmd, timeout=30: outputs.get(cmd[0], (1, ""))
 pages = {}
-def fetch(url, timeout=10):
+real_fetch = feed.fetch
+def fetch(url, timeout=10, head=False):
     if url not in pages:
         raise OSError("offline")
     return pages[url]
@@ -393,6 +394,38 @@ feed.run = lambda cmd, timeout=30: calls.append((cmd, timeout)) or (0, "")
 feed.check_fallback({}, False)
 check("Rückfall-Prüfung bei jedem Lauf", calls == [([os.path.realpath(os.path.join(os.path.dirname(FEED), "omarchy-buddy-check")),
                                                      "--rueckfall"], 600)], calls)
+
+# fetch() for real against a local server (#219): at most 2 MiB, a bigger
+# answer is broken (a status page that sends one is unreachable), the
+# Claude Code changelog only needs its head.
+import http.server, threading  # noqa: E402
+MAX = feed.FETCH_MAX
+class Big(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        n = {"/fits": MAX, "/api/status-page/x": MAX + 1}.get(self.path, MAX * 3)
+        self.send_response(200)
+        self.end_headers()  # no Content-Length: the size shows only while reading
+        try:
+            for _ in range(n // 65536):
+                self.wfile.write(b"a" * 65536)
+            self.wfile.write(b"a" * (n % 65536))
+        except OSError:
+            pass  # the reader stopped
+    def log_message(self, *a):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Big)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{server.server_port}"
+feed.fetch = real_fetch
+check("fetch: 2 MiB passen", len(feed.fetch(base + "/fits")) == MAX)
+try:
+    feed.fetch(base + "/huge")
+    check("fetch: größer als 2 MiB ist ein Fehler", False)
+except ValueError:
+    check("fetch: größer als 2 MiB ist ein Fehler", True)
+check("fetch: head=True schneidet bei 2 MiB ab", len(feed.fetch(base + "/huge", head=True)) == MAX)
+check("Kuma: zu große Antwort heißt nicht erreichbar", feed.test_kuma(base + "/status/x") == "unreachable")
+server.shutdown()
 
 shutil.rmtree(HOME, ignore_errors=True)
 done()

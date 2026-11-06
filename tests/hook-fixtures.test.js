@@ -70,9 +70,9 @@ function islandAnswer(request) {
   if (request.kind === "question") {
     const answers = {}
     for (const q of request.questions) answers[q.question] = q.options.slice(0, q.multiSelect ? 2 : 1).map(o => o.label)
-    return ["--answer", JSON.stringify(answers)]
+    return [["--answer"], JSON.stringify(answers)]  // the answers on stdin (#219)
   }
-  return ["--decide", request.kind === "plan" ? "auto" : "allow"]
+  return [["--decide", request.kind === "plan" ? "auto" : "allow"], ""]
 }
 
 // Answers a PermissionRequest the way the island does.
@@ -88,8 +88,8 @@ function askAndAllow(event, args) {
     until(() => (state()[event.session_id] || {}).requests).then(found => {
       if (!found) { p.kill(); return }
       request = state()[event.session_id].requests[0]
-      const [flag, ...rest] = islandAnswer(request)
-      spawnSync(HOOK, [flag, event.session_id, request.id, ...rest], { env })
+      const [[flag, ...rest], input] = islandAnswer(request)
+      spawnSync(HOOK, [flag, event.session_id, request.id, ...rest], { env, input })
     })
     p.stdin.end(JSON.stringify(event))
   })

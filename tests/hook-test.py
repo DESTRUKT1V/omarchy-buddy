@@ -28,8 +28,8 @@ def start(event):
     return p
 
 
-def run(*args, event=None):
-    return subprocess.run([HOOK, *args], input=json.dumps(event) if event else "", env=ENV, capture_output=True, text=True)
+def run(*args, event=None, text=""):
+    return subprocess.run([HOOK, *args], input=json.dumps(event) if event else text, env=ENV, capture_output=True, text=True)
 
 
 def state():
@@ -305,7 +305,7 @@ q = start(ask("AskUserQuestion", {"questions": QUESTIONS})); wait_requests(1, "s
 rq = requests("s2")[0]
 check("Frage: Art, Fragen, Kurztext, 300 s", rq["kind"] == "question" and rq["questions"] == QUESTIONS
       and rq["detail"] == "Welche Farbe?" and rq["wait"] == 300 and rq["always"] == "")
-run("--answer", "s2", rq["id"], json.dumps({"Welche Farbe?": "Blau", "Welche Tiere?": ["Hund", "Katze"], "Fremd?": "x"}))
+run("--answer", "s2", rq["id"], text=json.dumps({"Welche Farbe?": "Blau", "Welche Tiere?": ["Hund", "Katze"], "Fremd?": "x"}))
 out_q = json.loads(q.communicate(timeout=3)[0])["hookSpecificOutput"]["decision"]
 check("Frage: Antworten als updatedInput", out_q == {"behavior": "allow", "updatedInput": {
     "questions": QUESTIONS, "answers": {"Welche Farbe?": "Blau", "Welche Tiere?": "Hund, Katze"}}})
@@ -322,13 +322,13 @@ for choice, extra, expect in [
             {"type": "setMode", "mode": "auto", "destination": "session"}]}),
         ("allow", [], {"behavior": "allow", "updatedInput": PLAN, "updatedPermissions": [
             {"type": "setMode", "mode": "default", "destination": "session"}]}),
-        ("revise", ["Bitte  auch\nBlau"], {"behavior": "deny", "message": "Bitte auch Blau"})]:
+        ("revise", "Bitte  auch\nBlau", {"behavior": "deny", "message": "Bitte auch Blau"})]:
     p = start(ask("ExitPlanMode", PLAN)); wait_requests(1, "s2")
     rp = requests("s2")[0]
     if choice == "auto":
         check("Plan: Art, Titel, ganzer Plan", rp["kind"] == "plan" and rp["detail"] == "Farben anlegen"
               and rp["full"] == PLAN["plan"] and rp["wait"] == 300 and "truncated" not in rp)
-    run("--decide", "s2", rp["id"], choice, *extra)
+    run("--decide", "s2", rp["id"], choice, text="".join(extra))
     check("Plan: " + choice, json.loads(p.communicate(timeout=3)[0])["hookSpecificOutput"]["decision"] == expect)
 p = start(ask("ExitPlanMode", PLAN)); wait_requests(1, "s2")
 run("--decide", "s2", requests("s2")[0]["id"], "always")
@@ -647,7 +647,7 @@ def command_news(command, status="0", front="0xother", config=None):
         with open(os.path.join(cmd_home, name), "w") as f:
             f.write(text)
     shutil.rmtree(os.path.join(cmd_home, "state"), ignore_errors=True)
-    subprocess.run([HOOK, "--command", status, "185", str(os.getpid()), command], env=CMD_ENV, timeout=10)
+    subprocess.run([HOOK, "--command", status, "185", str(os.getpid())], input=command, text=True, env=CMD_ENV, timeout=10)
     try:
         return json.load(open(os.path.join(cmd_home, "state", "omarchy-buddy", "news.json")))
     except OSError:
@@ -668,6 +668,57 @@ check("langer Befehl: Agenten melden selbst",
 check("langer Befehl: Verlauf ohne Text, nur Exit-Code",
       [i["body"] for i in command_news("geheim", "1", config={"longCommands": True, "history": "noText"})] == ["Exit-Code 1"]
       and [i["body"] for i in command_news("geheim", config={"longCommands": True, "history": "noText"})] == [""])
+
+# 18f. Private text (prompt, command, reason) never stands in a process's
+# arguments, which other users can read in /proc/*/cmdline (#219): every
+# Python process logs its own argv and the argv it starts (sitecustomize),
+# bash and zsh run lib/long-commands.sh against the real hook.
+SECRET = "GEHEIM-219"
+spy = os.path.join(RT, "spy")
+os.makedirs(os.path.join(spy, "home", ".local", "bin"))
+os.symlink(os.path.abspath(HOOK), os.path.join(spy, "home", ".local", "bin", "omarchy-buddy-hook"))
+with open(os.path.join(spy, "sitecustomize.py"), "w") as f:
+    f.write("""import json, os, sys
+def log(argv):
+    with open(os.environ["ARGV_LOG"], "a") as f:
+        f.write(json.dumps([str(a) for a in argv]) + "\\n")
+log(sys.argv)
+sys.addaudithook(lambda event, args: event == "subprocess.Popen" and log([args[1]] if isinstance(args[1], (str, bytes)) else args[1]))
+""")
+SPY_ENV = dict(CMD_ENV, PYTHONPATH=spy, ARGV_LOG=os.path.join(spy, "argv.log"), HOME=os.path.join(spy, "home"))
+for name, text in (("front", "0xother"), ("config/omarchy-buddy/config.json", json.dumps({"longCommands": True}))):
+    with open(os.path.join(cmd_home, name), "w") as f:
+        f.write(text)
+shutil.rmtree(os.path.join(cmd_home, "state"), ignore_errors=True)
+spy_event = lambda name, **kw: json.dumps(dict(hook_event_name=name, session_id="spy", cwd="/x/proj", **kw))  # noqa: E731
+for event in (spy_event("PermissionDenied", tool_name="Bash", tool_input={"command": "rm " + SECRET}, reason=SECRET),
+              spy_event("UserPromptSubmit", prompt="Bau " + SECRET), spy_event("StopFailure", error="overloaded")):
+    subprocess.run([HOOK], input=event, env=SPY_ENV, capture_output=True, text=True, timeout=10)
+LONG = os.path.join(os.path.dirname(HOOK), "..", "lib", "long-commands.sh")
+shells = [["bash", "--norc", "-i", "-c", f'. "$1"; set -o history; history -s "make {SECRET}"; '
+           '_omarchy_buddy_start=$((SECONDS - 61)); false; _omarchy_buddy_precmd; sleep 2', "bash", LONG]]
+if shutil.which("zsh"):
+    shells.append(["zsh", "-f", "-i", "-c", f'. "$1"; _omarchy_buddy_start=$((SECONDS - 61)); _omarchy_buddy_cmd="make {SECRET}"; '
+                   'false; _omarchy_buddy_precmd; sleep 2', "zsh", LONG])
+# They stay a moment: the hook finds the terminal by the shell's parents.
+shells = [subprocess.Popen(sh, env=SPY_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          for sh in shells]
+spy_news = []
+for _ in range(100):  # the shells start the hook in the background
+    try:
+        spy_news = json.load(open(os.path.join(cmd_home, "state", "omarchy-buddy", "news.json")))
+    except (OSError, ValueError):
+        pass
+    if sum(i["source"] == "terminal" for i in spy_news) == len(shells):
+        break
+    time.sleep(0.05)
+for sh in shells:
+    sh.wait(timeout=10)
+spy_argv = open(SPY_ENV["ARGV_LOG"]).read().splitlines()
+check("Private Texte (#219): Ablehnung, Fehler mit Prompt, lange Befehle kommen an",
+      sum(SECRET in i["body"] for i in spy_news) == 2 + len(shells)
+      and any("omarchy-buddy-say" in a for a in spy_argv) and any("--command" in a for a in spy_argv))
+check("Private Texte (#219): in keinem argv", not [a for a in spy_argv if SECRET in a])
 
 # 19. lib/texts.py: both languages complete, same placeholders.
 sys.path.insert(0, os.path.join(os.path.dirname(HOOK), "..", "lib"))

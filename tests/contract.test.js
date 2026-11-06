@@ -135,3 +135,26 @@ test("Vertrag (#207): BarWidget.qml erfüllt Omarchys Panel-Bedingung",
   for (const re of [/function open\(\)/, /function close\(\)/, /function toggle\(\)/, /property bool opened:/])
     assert.match(ours, re)
 })
+
+// #220: the setup puts O-Morchy right after the clock (into centerEnd when the
+// clock ends the centre box) and finds Omarchy's indicators in the sections
+// it knows (SECTIONS in bin/omarchy-buddy-setup). An update that renames the
+// sections or moves the clock or the indicators shows up here.
+test("Vertrag (#220): Omarchys Leistenbereiche und wo Uhr und Anzeigen stehen",
+     { skip: !fs.existsSync(path.join(omarchy, "config/omarchy/shell.json")) && "keine Omarchy-shell.json" }, () => {
+  const m = /^SECTIONS = \(([^)]*)\)/m.exec(read(path.join(DIR, "..", "bin", "omarchy-buddy-setup")))
+  assert.ok(m, "SECTIONS nicht in bin/omarchy-buddy-setup")
+  const known = m[1].match(/"[^"]*"/g).map(s => JSON.parse(s))
+  const util = path.join(omarchy, "shell/Commons/Util.qml")
+  if (fs.existsSync(util)) {
+    const theirs = /barSections:\s*(\[[^\]]*\])/.exec(read(util))
+    assert.ok(theirs, "barSections nicht in Util.qml")
+    assert.deepEqual(JSON.parse(theirs[1]), known, "Omarchys Leistenbereiche – SECTIONS im Setup anpassen")
+  }
+  const layout = JSON.parse(read(path.join(omarchy, "config/omarchy/shell.json"))).bar.layout
+  assert.deepEqual(Object.keys(layout).filter(k => !known.includes(k)), [], "unbekannte Bereiche in Omarchys Leiste")
+  const ids = name => (layout[name] || []).map(e => e.id)
+  assert.equal(ids("center").at(-1), "omarchy.clock", "die Uhr beendet nicht mehr den Mittelblock")
+  assert.ok(Array.isArray(layout.centerEnd), "kein centerEnd, O-Morchy käme in den Mittelblock")
+  assert.ok(ids("centerBegin").includes("omarchy.indicators"), "Omarchys Anzeigen stehen nicht mehr in centerBegin")
+})

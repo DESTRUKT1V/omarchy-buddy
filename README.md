@@ -229,6 +229,9 @@ user. It cannot protect you from a process that already runs as you:
   `omarchy-buddy-say`, which any of your programs may call) and
   `~/.config/omarchy-buddy/config.json`. Whoever can write them decides what
   the island shows.
+- **Private text stays out of process arguments,** which other users can
+  read in `/proc/*/cmdline`: answers, plan feedback, prompts and terminal
+  commands go to the hook and to `omarchy-buddy-say` on stdin.
 - **What the island starts:** `xdg-open` for a news item's link (any address
   a program handed to `omarchy-buddy-say --url`), its own scripts
   (`omarchy-buddy-update`, `omarchy-buddy-crash`, the hook), `hyprctl` to
@@ -459,7 +462,9 @@ place is Omarchy's (`omarchy-weather-location`; without one it is found by
 your IP address); a click on it searches another. Data: Open-Meteo, in
 Germany also [Bright Sky](https://brightsky.dev) (DWD), no key. "Leiste
 ordnen" there puts the clock, O-Morchy and Omarchy's indicators side by
-side, only when you click it, with undo.
+side, only when you click it, with undo; it shows only on a bar where they
+are apart (Omarchy's own bar since November 2026 has them in order already:
+indicators, clock, then O-Morchy at the start of the right half).
 
 **Spotify's +** (no setup): while Spotify's desktop app plays and its
 window is open (also hidden in the scratchpad), a + beside the title
@@ -603,7 +608,9 @@ a window of their own (tmux, the far side of ssh) are left out, as nobody can
 tell whether they are in front.
 
 Your own items: `omarchy-buddy-say [--level info|good|warn|error] [--url URL] [--quiet | --popup-only] TITLE [BODY]`
-(`--quiet`: only into the history; `--popup-only`: only a pop-up).
+(`--quiet`: only into the history; `--popup-only`: only a pop-up; `--stdin`
+instead of TITLE and BODY: `{"title": …, "body": …}` as JSON on stdin, so a
+private text stays out of the process list).
 
 ## Notifications
 

@@ -57,11 +57,19 @@ def run(cmd, timeout=30):
         return -1, ""
 
 
-def fetch(url, timeout=10):
+FETCH_MAX = 2 * 2**20  # bytes: a bigger answer is broken or hostile (a status page URL is anyone's server)
+
+
+def fetch(url, timeout=10, head=False):
+    """The answer as text, at most FETCH_MAX bytes. A longer one raises
+    ValueError like a broken answer; with head=True it is cut there."""
     import urllib.request  # only the hourly network checks need it (a fifth of a normal run)
     req = urllib.request.Request(url, headers={"User-Agent": "omarchy-buddy-feed"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+        data = r.read(FETCH_MAX + 1)
+    if len(data) > FETCH_MAX and not head:
+        raise ValueError(f"answer larger than {FETCH_MAX} bytes: {url}")
+    return data[:FETCH_MAX].decode("utf-8", "replace")
 
 
 def version_key(v):
@@ -253,7 +261,8 @@ def check_crashes(st, quiet):
 
 
 def check_claude_code(st, quiet):
-    text = fetch("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md")
+    # 1.2 MB in 11/2026 and growing: only the newest entry at the top counts.
+    text = fetch("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md", head=True)
     m = re.search(r"^## (\S+)\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     if not m:
         return
