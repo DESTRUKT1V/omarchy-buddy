@@ -92,6 +92,11 @@ check("Plugin an: Widget gleich rechts neben der Uhr, nicht mehr in plugins[]",
 ind = [e for e in sh["bar"]["layout"]["center"] if e["id"] == "omarchy.indicators"][0]
 check("Dnd aus der Leiste, Rest wie Omarchy", "Dnd" not in ind["items"] and "NightLight" in ind["items"])
 check("Sicherungen", any(".bak-omarchy-buddy-" in n for n in os.listdir(os.path.join(home, ".claude"))))
+# #221: the backup is 0600 from the start (the test's settings.json is 0644
+# under umask 022; copy2 would make the backup 0644 too) and holds the old file.
+bak = [os.path.join(home, ".claude", n) for n in os.listdir(os.path.join(home, ".claude")) if ".bak-omarchy-buddy-" in n]
+check("Sicherung: nur für dich lesbar (0600), Inhalt wie vorher",
+      len(bak) == 1 and os.stat(bak[0]).st_mode & 0o777 == 0o600 and read(bak[0]) == SETTINGS)
 check("Skripte verlinkt", os.path.realpath(hook) == os.path.realpath(SETUP).replace("buddy-setup", "buddy-hook"))
 check("Timer-Units verlinkt", os.path.islink(os.path.join(home, ".config/systemd/user/omarchy-buddy-feed.timer")))
 check("Akku-Hook in Omarchys battery-low.d", os.path.realpath(os.path.join(home, ".config/omarchy/hooks/battery-low.d/omarchy-buddy"))

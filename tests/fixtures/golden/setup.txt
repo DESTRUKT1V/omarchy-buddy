@@ -209,10 +209,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-neu/.config/omarchy-buddy/con
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-neu/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-neu/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-neu/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-neu/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-neu/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -431,10 +431,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-neu/.config/omarchy-buddy/con
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-neu/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-neu/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-neu/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-neu/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-neu/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -517,8 +517,8 @@ Deine Daten bleiben in $SB/setup-neu/.local/state/omarchy-buddy und $SB/setup-ne
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 == setup --remove: exit 0
 -- stdout
 Skripte, Update-Hook und Timer entfernt.
@@ -593,8 +593,8 @@ Deine Daten bleiben in $SB/setup-neu/.local/state/omarchy-buddy und $SB/setup-ne
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## frage
 == setup  (Terminal, getippt 'n\n'): exit 1
 -- stdout
@@ -987,10 +987,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-frage/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-frage/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-frage/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-frage/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-frage/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -1325,10 +1325,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-frage/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-frage/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-frage/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-frage/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-frage/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -1394,8 +1394,8 @@ Deine Daten bleiben in $SB/setup-frage/.local/state/omarchy-buddy und $SB/setup-
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-frage/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-frage/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## ohne-shell-json
 == setup : exit 0
 -- stdout
@@ -1599,7 +1599,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-ohne-shell-json/.config/omarc
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-ohne-shell-json/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-ohne-shell-json/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-ohne-shell-json/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-ohne-shell-json/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
 $SB/setup-ohne-shell-json/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
@@ -1668,7 +1668,7 @@ Deine Daten bleiben in $SB/setup-ohne-shell-json/.local/state/omarchy-buddy und 
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-ohne-shell-json/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-ohne-shell-json/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-ohne-shell-json/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## ohne-claude
 == setup : exit 0
@@ -1745,7 +1745,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-ohne-claude/.config/omarchy-b
 -- Links und Sicherungen
 $SB/setup-ohne-claude/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-ohne-claude/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-ohne-claude/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-ohne-claude/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-ohne-claude/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-ohne-claude/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-ohne-claude/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -1809,7 +1809,7 @@ Deine Daten bleiben in $SB/setup-ohne-claude/.local/state/omarchy-buddy und $SB/
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-ohne-claude/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-ohne-claude/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## zwei-indikatoren
 == setup : exit 0
 -- stdout
@@ -2018,10 +2018,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-zwei-indikatoren/.config/omar
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-zwei-indikatoren/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-zwei-indikatoren/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-zwei-indikatoren/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-zwei-indikatoren/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-zwei-indikatoren/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -2237,10 +2237,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-zwei-indikatoren/.config/omar
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-zwei-indikatoren/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-zwei-indikatoren/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-zwei-indikatoren/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-zwei-indikatoren/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-zwei-indikatoren/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -2313,8 +2313,8 @@ Deine Daten bleiben in $SB/setup-zwei-indikatoren/.local/state/omarchy-buddy und
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-zwei-indikatoren/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-zwei-indikatoren/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-zwei-indikatoren/.local/bin/omarchy-buddy-say.vor-omarchy-buddy 0o644
 ######## settings-kaputt
 == setup : exit 1
@@ -2465,7 +2465,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-settings-ungewohnt/.config/om
 -- Links und Sicherungen
 $SB/setup-settings-ungewohnt/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-settings-ungewohnt/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-settings-ungewohnt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-settings-ungewohnt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-settings-ungewohnt/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-settings-ungewohnt/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-settings-ungewohnt/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -2632,7 +2632,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-shell-version-2/.config/omarc
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-shell-version-2/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-shell-version-2/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-shell-version-2/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-shell-version-2/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
 $SB/setup-shell-version-2/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
@@ -2719,7 +2719,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-omarchy-45/.config/omarchy-bu
 -- Links und Sicherungen
 $SB/setup-omarchy-45/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-omarchy-45/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-omarchy-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-omarchy-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-omarchy-45/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-omarchy-45/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-omarchy-45/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -2783,7 +2783,7 @@ Deine Daten bleiben in $SB/setup-omarchy-45/.local/state/omarchy-buddy und $SB/s
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-omarchy-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-omarchy-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## update-auf-45
 == setup : exit 0
 -- stdout
@@ -2865,7 +2865,7 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-update-auf-45/.config/omarchy
 -- Links und Sicherungen
 $SB/setup-update-auf-45/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-update-auf-45/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-update-auf-45/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -2947,7 +2947,7 @@ Omarchy: Anzeigen in der Leiste auf Omarchys aktuellen Stand gebracht, ohne Ruhe
 -- Links und Sicherungen
 $SB/setup-update-auf-45/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-update-auf-45/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-update-auf-45/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -3029,7 +3029,7 @@ Omarchy: nichts zu ändern.
 -- Links und Sicherungen
 $SB/setup-update-auf-45/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-update-auf-45/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-update-auf-45/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-update-auf-45/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -3100,7 +3100,7 @@ Deine Daten bleiben in $SB/setup-update-auf-45/.local/state/omarchy-buddy und $S
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-update-auf-45/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## update-ohne-setup
 == setup --indicators: exit 0
 -- stdout
@@ -3533,12 +3533,12 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -3927,12 +3927,12 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -4365,12 +4365,12 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -4514,10 +4514,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.local/state/omarchy/agents/accounts/codex/zwei/hooks.json -> $SB/setup-codex/.codex/hooks.json
 == setup --remove: exit 0
 -- stdout
@@ -4652,10 +4652,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex/.local/state/omarchy/agents/accounts/codex/zwei/hooks.json -> $SB/setup-codex/.codex/hooks.json
 ######## codex-neu
 == setup : exit 0
@@ -4983,10 +4983,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-neu/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex-neu/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-neu/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex-neu/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex-neu/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -5051,8 +5051,8 @@ Deine Daten bleiben in $SB/setup-codex-neu/.local/state/omarchy-buddy und $SB/se
 -- .codex/config.toml -
 (fehlt)
 -- Links und Sicherungen
-$SB/setup-codex-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-neu/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex-neu/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## codex-hooks-kaputt
 == setup : exit 1
 -- stdout
@@ -5309,10 +5309,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-codex-hooks-ungewohnt/.config
 -- .codex/config.toml 0o644
 
 -- Links und Sicherungen
-$SB/setup-codex-hooks-ungewohnt/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-hooks-ungewohnt/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-hooks-ungewohnt/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex-hooks-ungewohnt/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex-hooks-ungewohnt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-hooks-ungewohnt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-hooks-ungewohnt/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex-hooks-ungewohnt/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex-hooks-ungewohnt/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -5523,10 +5523,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-codex-toml-kaputt/.config/oma
 -- .codex/config.toml 0o644
 [kaputt
 -- Links und Sicherungen
-$SB/setup-codex-toml-kaputt/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-toml-kaputt/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-toml-kaputt/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex-toml-kaputt/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex-toml-kaputt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-toml-kaputt/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-toml-kaputt/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex-toml-kaputt/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex-toml-kaputt/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -5738,10 +5738,10 @@ Einstellungen: Zahnrad in der Insel oder $SB/setup-codex-toml-inline/.config/oma
 hooks = { state = { "x" = { enabled = true } } }
 
 -- Links und Sicherungen
-$SB/setup-codex-toml-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-toml-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-toml-inline/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex-toml-inline/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex-toml-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-toml-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-toml-inline/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex-toml-inline/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex-toml-inline/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -6076,10 +6076,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex-trust-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-trust-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-trust-inline/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-codex-trust-inline/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-codex-trust-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-trust-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-codex-trust-inline/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-codex-trust-inline/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-codex-trust-inline/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -6239,8 +6239,8 @@ state = { "$SB/setup-codex-trust-inline/.codex/hooks.json:session_start:0:0" = {
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-codex-trust-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-codex-trust-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-codex-trust-inline/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-codex-trust-inline/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## fremd-in-gruppe
 == setup : exit 0
 -- stdout
@@ -6593,12 +6593,12 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-fremd-in-gruppe/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-fremd-in-gruppe/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-fremd-in-gruppe/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-fremd-in-gruppe/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-fremd-in-gruppe/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -6958,12 +6958,12 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-fremd-in-gruppe/.config/omarchy/hooks/battery-low.d/omarchy-buddy -> $REPO/hooks/battery-low
 $SB/setup-fremd-in-gruppe/.config/omarchy/hooks/post-update.d/omarchy-buddy-check -> $REPO/hooks/post-update
-$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 $SB/setup-fremd-in-gruppe/.config/systemd/user/omarchy-buddy-feed.service -> $REPO/systemd/omarchy-buddy-feed.service
 $SB/setup-fremd-in-gruppe/.config/systemd/user/omarchy-buddy-feed.timer -> $REPO/systemd/omarchy-buddy-feed.timer
 $SB/setup-fremd-in-gruppe/.local/bin/omarchy-buddy-check -> $REPO/bin/omarchy-buddy-check
@@ -7069,10 +7069,10 @@ trusted_hash = "sha256:H"
 
 -- Hashes wie Codex: ja
 -- Links und Sicherungen
-$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o644
-$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o644
+$SB/setup-fremd-in-gruppe/.claude/settings.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/config.toml.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.codex/hooks.json.bak-omarchy-buddy-DATUM 0o600
+$SB/setup-fremd-in-gruppe/.config/omarchy/shell.json.bak-omarchy-buddy-DATUM 0o600
 ######## aufrufe
 == setup --help: exit 1
 -- stdout

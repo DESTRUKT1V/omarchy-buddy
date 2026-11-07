@@ -3,6 +3,15 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.2.2 – 2026-11-07
+
+- **Backups are private from their first byte** (#221, review for
+  plugins.omarchy.org): before the setup changes a file (`~/.claude/settings.json`,
+  Codex's files, `shell.json` …), its backup is created readable only by
+  you (0600). Before, it was copied under your umask (often 0644) and
+  narrowed only afterwards, so another account could have opened it in
+  between.
+
 ## 1.2.1 – 2026-11-07
 
 Fixes from the review for plugins.omarchy.org (#219), and Omarchy's new bar.
