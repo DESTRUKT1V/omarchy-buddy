@@ -3,6 +3,18 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.2.4 – 2026-11-07
+
+- **A slow server cannot stop the news** (#227): a status page or feed
+  that sends its answer a byte at a time held the hourly check, and with
+  it every later one, for good. Each answer now has 30 seconds in all.
+- **Your place stays off the process list** (#227): the weather's
+  addresses (your place, its coordinates, what you search for) go to curl
+  on its input, no longer in its arguments, which other accounts can read.
+- **A crash click sends only your own crash** (#227): the agent gets the
+  core dump of that PID from your account only, never a newer one of
+  another account's program.
+
 ## 1.2.3 – 2026-11-07
 
 - **A plan never loads an image** (#226, review for plugins.omarchy.org):

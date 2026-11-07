@@ -23,8 +23,10 @@ def main():
             and subprocess.run(["omarchy-default-agent"], capture_output=True, text=True).stdout.strip():
         out = subprocess.run(["coredumpctl", "--json=short", "--no-pager", pid], capture_output=True, text=True).stdout
         try:
-            dump = json.loads(out)[-1]
-        except (ValueError, IndexError, KeyError):
+            # Only the user's own: a PID comes back, and another account's
+            # crash would put its program's path into the agent's prompt (#227).
+            dump = [d for d in json.loads(out) if isinstance(d, dict) and d.get("uid") == os.getuid()][-1]
+        except (ValueError, IndexError, TypeError):
             dump = {}  # rotated away: the agent still gets the pid
         exe = str(dump.get("exe") or "unknown")
         try:

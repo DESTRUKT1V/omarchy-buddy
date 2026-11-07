@@ -44,13 +44,19 @@ Scope {
   function refresh() {
     if (!on || testing || locator.running || fetcher.running) return
     if (!spot) {
-      locator.command = ["sh", "-c", "curl -fsS --max-time 10 --max-filesize 2M \"$1\" || echo offline", "sh", WeatherLogic.locateUrl(place)]
-      locator.running = true
+      start(locator, WeatherLogic.curlCommand("offline"), WeatherLogic.locateUrl(place))
       return
     }
     fetcher.list = WeatherLogic.sources(spot, Date.now() / 1000)
-    fetcher.command = WeatherLogic.fetchCommand(fetcher.list)
-    fetcher.running = true
+    start(fetcher, WeatherLogic.fetchCommand(), fetcher.list.map(function(s) { return s.url }))
+  }
+
+  // The addresses go on curl's stdin, not into its arguments (WeatherLogic.curl).
+  function start(process, command, urls) {
+    process.command = command
+    process.input = WeatherLogic.curlInput(urls)
+    process.stdinEnabled = true
+    process.running = true
   }
 
   // Severe weather into the news and as a pop-up, once per warning (#189,
@@ -69,8 +75,7 @@ Scope {
     if (String(text).trim() === "") return
     found = []
     searchState = "searching"
-    searcher.command = ["curl", "-fsS", "--max-time", "10", "--max-filesize", "2M", WeatherLogic.searchUrl(text, app.lang)]
-    searcher.running = true
+    start(searcher, WeatherLogic.curlCommand(""), WeatherLogic.searchUrl(text, app.lang))
   }
   function endSearch() { found = []; searchState = "" }
   // omarchy-weather-location writes weather.json; the watcher brings it here.
@@ -113,6 +118,8 @@ Scope {
 
   Process {
     id: locator
+    property string input: ""
+    onStarted: { write(input); stdinEnabled = false }
     stdout: StdioCollector {
       onStreamFinished: {
         if (weather.testing) return
@@ -126,6 +133,8 @@ Scope {
   Process {
     id: fetcher
     property var list: []
+    property string input: ""
+    onStarted: { write(input); stdinEnabled = false }
     stdout: StdioCollector {
       onStreamFinished: {
         if (!weather.spot || weather.testing) return
@@ -139,6 +148,8 @@ Scope {
   }
   Process {
     id: searcher
+    property string input: ""
+    onStarted: { write(input); stdinEnabled = false }
     onExited: (code) => { if (code !== 0) weather.searchState = "failed" }
     stdout: StdioCollector {
       onStreamFinished: {

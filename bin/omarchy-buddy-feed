@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -58,15 +59,26 @@ def run(cmd, timeout=30):
 
 
 FETCH_MAX = 2 * 2**20  # bytes: a bigger answer is broken or hostile (a status page URL is anyone's server)
+FETCH_SECONDS = 30  # for the whole answer: timeout= only bounds each read, a server can drip forever (#227)
 
 
 def fetch(url, timeout=10, head=False):
-    """The answer as text, at most FETCH_MAX bytes. A longer one raises
-    ValueError like a broken answer; with head=True it is cut there."""
+    """The answer as text, at most FETCH_MAX bytes within FETCH_SECONDS. A
+    longer or slower one raises ValueError (TimeoutError) like a broken
+    answer; with head=True a longer one is cut there."""
     import urllib.request  # only the hourly network checks need it (a fifth of a normal run)
+
+    def late(*_):
+        raise TimeoutError(f"no whole answer in {FETCH_SECONDS} s: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "omarchy-buddy-feed"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = r.read(FETCH_MAX + 1)
+    old = signal.signal(signal.SIGALRM, late)
+    signal.setitimer(signal.ITIMER_REAL, FETCH_SECONDS)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(FETCH_MAX + 1)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
     if len(data) > FETCH_MAX and not head:
         raise ValueError(f"answer larger than {FETCH_MAX} bytes: {url}")
     return data[:FETCH_MAX].decode("utf-8", "replace")

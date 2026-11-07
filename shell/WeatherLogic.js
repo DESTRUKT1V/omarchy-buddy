@@ -64,12 +64,25 @@ function sources(place, now) {
   ])
 }
 
-// One shell run for all of them: each answer, then a separator line
+// curl reads each address from stdin (curlInput) as a config line, through
+// sh's own printf: they hold the place and its coordinates, and other users
+// can read process arguments in /proc/*/cmdline (#227).
+function curl(flags) {
+  return "printf 'url = \"%s\"\\n' \"$u\" | curl -fsS --max-time 10 --max-filesize 2M " + flags + "-K -"
+}
+
+// One address (the first line of curlInput): its answer, or orElse's text when it fails.
+function curlCommand(orElse) {
+  return ["sh", "-c", "IFS= read -r u; " + curl("") + (orElse ? " || echo " + orElse : "")]
+}
+
+function curlInput(urls) { return [].concat(urls).join("\n") + "\n" }
+
+// One shell run for all of them (curlInput of their urls): each answer, then a separator line
 // (an answer that fails, breaks off or passes 2 MiB leaves only its own part empty).
 var separator = "\n\u001e\n"
-function fetchCommand(list) {
-  return ["sh", "-c", "for u; do curl -fsS --compressed --max-time 10 --max-filesize 2M \"$u\"; printf '\\n\\036\\n'; done", "sh"]
-    .concat(list.map(function(s) { return s.url }))
+function fetchCommand() {
+  return ["sh", "-c", "while IFS= read -r u; do " + curl("--compressed ") + "; printf '\\n\\036\\n'; done"]
 }
 
 // The shell's output → { key: parsed answer or null }.

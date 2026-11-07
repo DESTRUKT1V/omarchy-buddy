@@ -55,9 +55,34 @@ test("Quellen: Open-Meteo überall, Bright Sky nur in Deutschland", () => {
   assert.deepEqual(de.map(s => s.key), ["om", "current", "radar", "alerts"])
   assert.match(de[0].url, /latitude=50\.762&longitude=6\.088/)
   assert.match(de[2].url, /radar\?lat=50\.762&lon=6\.088&distance=0&format=plain&date=2026-11-01T16%3A40/)
-  const cmd = W.fetchCommand(de)
-  assert.deepEqual(cmd.slice(0, 2), ["sh", "-c"])
-  assert.deepEqual(cmd.slice(4), de.map(s => s.url), "Adressen als Argumente, nicht im Skript")
+})
+
+// A stand-in curl that logs its arguments and answers with the config it got
+// on stdin: the place and its coordinates must not show in any argv (#227).
+function runCurl(cmd, urls, fails) {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "weather-curl-"))
+  fs.writeFileSync(path.join(dir, "curl"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LOG"\ncat\n' + (fails ? "exit 22\n" : ""), { mode: 0o755 })
+  const log = path.join(dir, "log")
+  const r = cp.spawnSync(cmd[0], cmd.slice(1), { input: W.curlInput(urls), encoding: "utf8",
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH, LOG: log } })
+  const argv = fs.readFileSync(log, "utf8")
+  fs.rmSync(dir, { recursive: true })
+  return { out: r.stdout, argv, status: r.status }
+}
+
+test("curl: Adressen auf stdin, nie in den Argumenten", () => {
+  const de = W.sources(AACHEN, NOW), urls = de.map(s => s.url)
+  const all = runCurl(W.fetchCommand(), urls)
+  assert.deepEqual(all.out.split(W.separator).slice(0, 4), urls.map(u => 'url = "' + u + '"\n'), "jede Adresse, getrennt")
+  assert.equal(all.argv.split("\n").filter(Boolean).length, 4, "ein curl je Adresse")
+  const one = runCurl(W.curlCommand("offline"), W.locateUrl(AACHEN))
+  assert.equal(one.out, 'url = "https://wttr.in/Aachen?format=j1"\n')
+  assert.match(runCurl(W.curlCommand("offline"), W.locateUrl(AACHEN), true).out, /offline\n$/, "Fehler sagt offline")
+  const search = runCurl(W.curlCommand(""), W.searchUrl("Aachen", "de"), true)
+  assert.notEqual(search.status, 0, "Suche: curls Fehler ist der Exit-Code")
+  for (const r of [all, one, search])
+    for (const secret of ["50.762", "6.088", "Aachen"]) assert.ok(!r.argv.includes(secret), secret + " in argv: " + r.argv)
 })
 
 test("Antworten zerlegen: eine kaputte Antwort trifft nur sich selbst", () => {
