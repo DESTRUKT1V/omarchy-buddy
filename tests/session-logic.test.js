@@ -332,8 +332,8 @@ test("Plan: Links in Theme-Farbe, Bilder und Sonderzeichen", () => {
     '<a href="a.png" style="color:#fff">Bild</a> und <a href="u" style="color:#fff">a&lt;b</a>')
   assert.equal(L.planLinks("![](https://x/p.png)", "#fff"), '<a href="https://x/p.png" style="color:#fff">https://x/p.png</a>')
   assert.equal(L.planLinks('<img src="https://x/p.png"> a < b', "#fff"), '&lt;img src="https://x/p.png"> a < b')
-  assert.equal(L.planLinks("`<img src=x>` und [l](u)\n```\n<b>[l](u)\n```", "#fff"),
-    '`<img src=x>` und <a href="u" style="color:#fff">l</a>\n```\n<b>[l](u)\n```')
+  assert.equal(L.planLinks("`<img src=x>` und [l](u)\n```\n<b>[l](u)\n```", "#fff").replace(/\u200b/g, ""),
+    '`<img src=x>` und <a href="u" style="color:#fff">l</a>\n```\n<b>[l](u)\n```', "Code sieht aus wie vorher")
   assert.equal(L.planLinks("ohne Links", "#fff"), "ohne Links")
 })
 
@@ -351,7 +351,13 @@ test("Plan: kein Bild lädt aus dem Netz, egal wie geschrieben (#148)", () => {
   noImage("<https://a/p.png> und <a@b.de>", "Autolinks")
   assert.equal(L.planLinks('![x](https://a/p.png "t")', "#fff"), '[x](https://a/p.png "t")', "bleibt ein Link")
   assert.equal(L.planLinks("<https://a/p.png>", "#fff"), "&lt;https://a/p.png>", "Autolink als Text")
-  assert.equal(L.planLinks("`![x](u)`", "#fff"), "`![x](u)`", "Code bleibt wie er ist")
+  assert.equal(L.planLinks("`![x](u)`", "#fff").replace(/\u200b/g, ""), "`![x](u)`", "Code sieht aus wie vorher")
+  // #226: where we see code but Qt's reader does not, nothing may load either
+  noImage("``![x](https://a/p.png)`", "ungleiche Backticks")
+  noImage("`![x](https://a/p.png)``", "ungleiche Backticks, andersherum")
+  noImage("``<img src=https://a/p.png>`", "HTML-img zwischen ungleichen Backticks")
+  noImage("~~~\n```\n![x](https://a/p.png)\n<img src=https://a/p.png>", "Zaun, der nicht schließt")
+  noImage("```\n![x](https://a/p.png)", "Zaun ohne Ende")
 })
 
 test("Countdown: Sekunden unter einer Minute, darüber Minuten", () => {

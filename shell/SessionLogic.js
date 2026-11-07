@@ -423,9 +423,13 @@ function openText(questions, sel, lang) {
 // reader paints [text](url) in its own fixed blue, inline HTML keeps a color.
 // Every image (inline, with title, reference style) becomes a link and the
 // plan's own HTML tags plain text, so showing a plan never loads anything
-// from the net. Code (spans, fences) stays as is: Qt shows it as text anyway.
+// from the net. What looks like code (spans, fences) keeps its look, but a
+// zero-width space after every "!" before "[" and every "<" before a tag:
+// where Qt's reader sees no code (unequal backtick runs, fences that do not
+// close), that is no image and no tag either (#226).
 function planLinks(text, color) {
   function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
+  function inert(t) { return t.replace(/!\[/g, "!\u200b[").replace(/<(?=[A-Za-z\/!?])/g, "<\u200b") }
   function prose(t) {
     return t.replace(/!\[/g, "[").replace(/\[([^\]\n]*)\]\(([^)\s]+)\)|<(?=[A-Za-z\/!?])/g, function(all, label, url) {
       if (all === "<") return "&lt;"
@@ -434,8 +438,8 @@ function planLinks(text, color) {
   }
   var fence = false
   return String(text || "").split("\n").map(function(line) {
-    if (/^\s{0,3}(```|~~~)/.test(line)) { fence = !fence; return line }
-    return fence ? line : line.split(/(`+[^`]*`+)/).map(function(part, i) { return i % 2 ? part : prose(part) }).join("")
+    if (/^\s{0,3}(```|~~~)/.test(line)) { fence = !fence; return inert(line) }
+    return fence ? inert(line) : line.split(/(`+[^`]*`+)/).map(function(part, i) { return i % 2 ? inert(part) : prose(part) }).join("")
   }).join("\n")
 }
 

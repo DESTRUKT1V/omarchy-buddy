@@ -3,6 +3,15 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.2.3 – 2026-11-07
+
+- **A plan never loads an image** (#226, review for plugins.omarchy.org):
+  text that only looked like code to the buddy (backtick runs of unequal
+  length, a fence that does not close) could still hold an image or an
+  HTML tag for Qt's Markdown reader, so showing such a plan could fetch an
+  address from the net before any click. Images and tags are now defused
+  there too; real code looks as before.
+
 ## 1.2.2 – 2026-11-07
 
 - **Backups are private from their first byte** (#221, review for
