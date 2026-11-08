@@ -53,6 +53,18 @@ function pickScreen(names, focused, pinned, current, hold) {
   return names[0]
 }
 
+// The screen object named `name` (pickScreen's choice) in Quickshell's
+// list, else the first one, null without any (#229).
+function screenFor(screens, name) {
+  for (var i = 0; i < screens.length; i++) if (screens[i].name === name) return screens[i]
+  return screens.length ? screens[0] : null
+}
+
+// The island has no screen in the list (none yet, or its monitor is gone; a
+// monitor that comes back is a new object): it must unmap before it maps on
+// the next one, else it stays on the dead output (#229).
+function screenGone(screens, held) { return screens.indexOf(held) === -1 }
+
 // Light Omarchy themes (Catppuccin Latte, Flexoki Light, Rosé Pine, White)
 // have a mid-dark text colour on a near-white background: the same
 // transparency gives far less contrast there than on a dark theme. Light

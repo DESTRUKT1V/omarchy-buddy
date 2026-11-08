@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.destrukt1v.omarchy-buddy",
   "name": "Omarchy-Buddy",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "author": "SWG DESTRUKTIV",
   "description": "O-Morchy, a pixel buddy in the bar beside the clock, with an island under it: Claude Code sessions (allow, deny, answer, jump to the terminal), news and every desktop notification in one place. Set up with bin/omarchy-buddy-setup.",
   "kinds": [

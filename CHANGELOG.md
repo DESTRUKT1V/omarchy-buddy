@@ -3,6 +3,18 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.2.5 – 2026-11-08
+
+- **A redirect cannot fill the memory** (#230, review for
+  plugins.omarchy.org): when a status page or a feed answered with a
+  redirect, Python read that answer's whole body before
+  following it, past the 2 MiB limit. A redirect's body is no longer read.
+- **The island comes back after the monitor was gone** (#229): when the
+  monitor went away for a moment (Hyprland then shows a stand-in), the
+  island, its pop-ups and the player stayed on the vanished screen and no
+  longer opened until the shell restarted. Now they move to the screen that
+  is there.
+
 ## 1.2.4 – 2026-11-07
 
 - **A slow server cannot stop the news** (#227): a status page or feed

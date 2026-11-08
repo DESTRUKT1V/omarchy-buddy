@@ -114,6 +114,21 @@ test("Bildschirm: fokussierter Monitor, fest eingestellter gewinnt, hält beim Z
   assert.equal(L.pickScreen([], "DP-1", "", "DP-1", false), "")
 })
 
+test("Bildschirm-Objekt: nach Monitor weg/wieder da neu gewählt, vorher abgemeldet (#229)", () => {
+  const dp = { name: "DP-1" }, hdmi = { name: "HDMI-A-1" }, dpNew = { name: "DP-1" }
+  assert.equal(L.screenFor([dp, hdmi], "HDMI-A-1"), hdmi)
+  assert.equal(L.screenFor([dp, hdmi], "eDP-1"), dp)
+  assert.equal(L.screenFor([], "DP-1"), null)
+  // noch angeschlossen: bleibt
+  assert.equal(L.screenGone([dp, hdmi], dp), false)
+  // Monitor weg (Hyprland zeigt FALLBACK) oder als neues Objekt zurück
+  assert.equal(L.screenGone([{ name: "FALLBACK" }], dp), true)
+  assert.equal(L.screenGone([dpNew], dp), true)
+  assert.equal(L.screenFor([dpNew], "DP-1"), dpNew)
+  // noch keiner gewählt
+  assert.equal(L.screenGone([dp], null), true)
+})
+
 test("Helle Themes: erkannt am Hintergrund, kräftigere Zweittexte und Karten", () => {
   const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
   for (const bg of ["#ffffff", "#eff1f5", "#FFFCF0", "#faf4ed"]) assert.equal(L.isLight(...rgb(bg)), true, bg)

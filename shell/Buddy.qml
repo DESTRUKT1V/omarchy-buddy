@@ -160,10 +160,20 @@ Item {
     settings.values.screen, screenName, mode !== "pill")
   // Later, not inside the binding: wantScreen reads screenName itself.
   onWantScreenChanged: Qt.callLater(function() { buddy.screenName = buddy.wantScreen })
-  readonly property var screen: {
-    var list = Quickshell.screens
-    for (var i = 0; i < list.length; i++) if (list[i].name === screenName) return list[i]
-    return list.length ? list[0] : null
+  // Held, not a binding (#229): when its monitor goes, null for a turn, so
+  // the island unmaps and maps anew on the screen then chosen, like Omarchy's
+  // OverlayWindow. Hyprland closes a layer surface with its output, and
+  // Quickshell never maps a closed one again by itself.
+  property var screen: null
+  function placeScreen() { screen = IslandLogic.screenFor(Quickshell.screens, screenName) }
+  onScreenNameChanged: placeScreen()
+  Connections {
+    target: Quickshell
+    function onScreensChanged() {
+      if (!IslandLogic.screenGone(Quickshell.screens, buddy.screen)) return
+      buddy.screen = null
+      Qt.callLater(buddy.placeScreen)
+    }
   }
   Binding { target: Theme; property: "screen"; value: buddy.screen }
   Binding { target: Theme; property: "tall"; value: buddy.weather.on }
@@ -435,5 +445,5 @@ Item {
 
   Probe { app: buddy; island: islandWindow.islandItem; playerWindow: islandWindow.playerItem }
 
-  Island { id: islandWindow; app: buddy; visible: !buddy.veiled }
+  Island { id: islandWindow; app: buddy; visible: !buddy.veiled && !!buddy.screen }
 }

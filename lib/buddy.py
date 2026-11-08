@@ -31,6 +31,19 @@ TEST_KEY = "buddy-test-"  # tests/gallery's items; they do not count against NEW
 SAY = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "omarchy-buddy-say")
 
 
+def urlopen(url, timeout, agent="omarchy-buddy"):
+    """urllib's urlopen, except that a redirect's body is never read: urllib
+    reads all of it, unbounded, before it follows (catalog review, #230)."""
+    import urllib.request  # only the network checks need it
+
+    class Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            fp.close()  # urllib's fp.read() then returns b""
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    req = urllib.request.Request(url, headers={"User-Agent": agent})
+    return urllib.request.build_opener(Redirect).open(req, timeout=timeout)
+
+
 def claude_account():
     """The Claude account this process runs as: "" for the main one
     (~/.claude), else its home. Omarchy 4.5 gives each further subscription

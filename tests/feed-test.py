@@ -398,19 +398,25 @@ check("Rückfall-Prüfung bei jedem Lauf", calls == [([os.path.realpath(os.path.
 # fetch() for real against a local server (#219): at most 2 MiB, a bigger
 # answer is broken (a status page that sends one is unreachable), the
 # Claude Code changelog only needs its head.
-import http.server, threading  # noqa: E402
+import http.server, threading, time  # noqa: E402
 MAX = feed.FETCH_MAX
+sent = []  # bytes of each body the server got out
 class Big(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        n = {"/fits": MAX, "/api/status-page/x": MAX + 1}.get(self.path, MAX * 3)
-        self.send_response(200)
+        n = {"/fits": MAX, "/api/status-page/x": MAX + 1, "/moved": MAX * 32}.get(self.path, MAX * 3)
+        self.send_response(302 if self.path == "/moved" else 200)
+        if self.path == "/moved":  # a redirect with a 64 MiB body (#230)
+            self.send_header("Location", "/fits")
         self.end_headers()  # no Content-Length: the size shows only while reading
+        out = 0
         try:
             for _ in range(n // 65536):
                 self.wfile.write(b"a" * 65536)
+                out += 65536
             self.wfile.write(b"a" * (n % 65536))
         except OSError:
             pass  # the reader stopped
+        sent.append(out)
     def log_message(self, *a):
         pass
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Big)
@@ -425,6 +431,10 @@ except ValueError:
     check("fetch: größer als 2 MiB ist ein Fehler", True)
 check("fetch: head=True schneidet bei 2 MiB ab", len(feed.fetch(base + "/huge", head=True)) == MAX)
 check("Kuma: zu große Antwort heißt nicht erreichbar", feed.test_kuma(base + "/status/x") == "unreachable")
+sent.clear()
+moved = len(feed.fetch(base + "/moved"))
+time.sleep(0.2)  # the server notices the closed connection
+check("fetch: Weiterleitung folgt, ohne ihren Body zu lesen (#230)", moved == MAX and len(sent) == 2 and max(sent) < 8 * MAX, sent)
 server.shutdown()
 
 # A server that drips its answer (a byte every 0.2 s, here for 5 s) must not
