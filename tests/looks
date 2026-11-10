@@ -26,10 +26,14 @@
 #                        (no setup.json yet), the greeting after the first
 #                        setup, its test pop-up and "Agents" before the first
 #                        session, in the theme and a light one
+#   tests/looks DIR ki       only "Mit KI ansehen" (#235): a critical pop-up
+#                        with the button, its row in the history, the setting
+#                        (with and without a default agent), in the theme and a light one
 #   LOOKS_LANG=en tests/looks DIR …   the texts in English (default German)
+#   LOOKS_ZOOM=1.05 tests/looks DIR …  a fixed zoom (default automatic; for a headless FALLBACK monitor)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start ) ) ]] || { sed -n '2,29p' "$0"; exit 1; }
+[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start || $2 == ki ) ) ]] || { sed -n '2,30p' "$0"; exit 1; }
 mode=${2-}
 out=$(realpath -m "$1")
 mkdir -p "$out"
@@ -61,12 +65,29 @@ ln -s "$PWD/shell" "$qs/buddy"
 ln -s "$PWD/bin" "$qs/bin"
 cp tests/looks.qml "$qs/shell.qml"
 mkdir -p "$box/home/.config/omarchy-buddy" "$box/home/.config/omarchy"
-echo "{\"language\": \"${LOOKS_LANG:-de}\", \"weather\": $([[ $mode == wetter ]] && echo true || echo false)}" >"$box/home/.config/omarchy-buddy/config.json"
+echo "{\"language\": \"${LOOKS_LANG:-de}\", \"zoom\": ${LOOKS_ZOOM:-0}, \"weather\": $([[ $mode == wetter ]] && echo true || echo false)}" >"$box/home/.config/omarchy-buddy/config.json"
 # As after the setup: Omarchy's notifications off, so the island serves them (#187),
 # and its record (only "start" begins before the setup, #192; Claude and Codex
 # installed, for "Agents" before the first session).
 echo '{"version": 1, "disabledPlugins": ["omarchy.notifications"]}' >"$box/home/.config/omarchy/shell.json"
+# Clones for the update watcher's switches under "Quellen" (#224; --git-list needs no network),
+# each with what the page says (#225): nothing, local changes, no branch, a new version with a build step.
+for r in .oh-my-zsh .config/omarchy/plugins/someone.dock .local/share/sometool lightforge; do
+  git -c init.defaultBranch=main init -q "$box/home/$r" && git -C "$box/home/$r" remote add origin "https://github.com/someone/${r##*/}.git"
+done
+for r in .config/omarchy/plugins/someone.dock .local/share/sometool lightforge; do
+  [[ $r == lightforge ]] && echo "all:" >"$box/home/$r/Makefile" || echo "eins" >"$box/home/$r/README"
+  git -C "$box/home/$r" add -A && git -C "$box/home/$r" -c user.name=Test -c user.email=test@example.org commit -qm eins
+done
+echo "zwei" >>"$box/home/.config/omarchy/plugins/someone.dock/README"
+git -C "$box/home/lightforge" config branch.main.remote origin && git -C "$box/home/lightforge" config branch.main.merge refs/heads/main
+# One with its own git settings: listed, never watched, no switch (#232).
+git -c init.defaultBranch=main init -q "$box/home/.local/share/owntool" && git -C "$box/home/.local/share/owntool" remote add origin https://github.com/someone/owntool.git
+git -C "$box/home/.local/share/owntool" config core.pager "less -R"
 mkdir -p "$box/home/.local/state/omarchy-buddy"
+echo '{"git_updates": {"~/lightforge": "git"}}' >"$box/home/.local/state/omarchy-buddy/feed.json"
+# "Mit KI ansehen" needs a default agent (#235).
+[[ $mode == ki ]] && mkdir -p "$box/home/.config/omarchy/defaults" && echo claude >"$box/home/.config/omarchy/defaults/agent"
 if [[ $mode == start ]]; then mkdir -p "$box/home/.claude" "$box/home/.codex"
 else echo '{}' >"$box/home/.local/state/omarchy-buddy/setup.json"; fi
 # The weather's settings offer to arrange Omarchy's bar with the widget beside the clock (#184).
@@ -179,7 +200,7 @@ variant() {  # name
   calm
   ipc omarchy-buddy open >/dev/null; shot "$name-5-gross"
   probe testSettingsPage true >/dev/null; shot "$name-6-einstellungen"
-  probe testScrollTo "Quellen" >/dev/null; probe testClick "Quellen" >/dev/null; sleep 0.3; probe testScrollTo "GitHub" >/dev/null; shot "$name-6-einstellungen-quellen"
+  probe testScrollTo "$(L Quellen Sources)" >/dev/null; probe testClick "$(L Quellen Sources)" >/dev/null; sleep 0.3; probe testScrollTo "lightforge" >/dev/null; shot "$name-6-einstellungen-quellen"
   probe testSettingsPage false >/dev/null
   # Out of the history again; wait out its "Rückgängig", or the next open view shows it.
   ipc omarchy-buddy close >/dev/null; probe testForget >/dev/null; sleep 8.5
@@ -313,6 +334,40 @@ start_looks() {
     shot "start-$theme-leer-agents"
   done
 }
+# "Mit KI ansehen" (#235): a critical notification without a button of its own.
+ki_looks() {
+  edge=top
+  local theme
+  ipc omarchy-buddy.looks bar true >/dev/null
+  for theme in dunkel hell; do
+    colors "$theme"
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify -- Backup 0 "" "$(L "Sicherung fehlgeschlagen" "Backup failed")" \
+      "$(L "Ziel /mnt/backup ist voll (0 B frei)." "Target /mnt/backup is full (0 B free).")" "[]" "{'urgency': <byte 2>}" 0 >/dev/null
+    shot "ki-$theme-popup"
+    ipc notifications dismissAll >/dev/null
+    ipc omarchy-buddy open >/dev/null; shot "ki-$theme-verlauf"
+    probe testSettingsPage true >/dev/null; sleep 0.5; probe testScrollTo "$(L "Fehler mit KI ansehen" "Ask AI about errors")" >/dev/null
+    shot "ki-$theme-einstellungen"
+    if [[ $theme == dunkel ]]; then
+      rm "$XDG_CONFIG_HOME/omarchy/defaults/agent"; sleep 1.5
+      shot "ki-$theme-einstellungen-ohne-agent"
+      echo claude >"$XDG_CONFIG_HOME/omarchy/defaults/agent"
+    fi
+    probe testSettingsPage false >/dev/null
+    # Out of the history again; wait out its "Rückgängig".
+    ipc omarchy-buddy close >/dev/null; ipc notifications clear >/dev/null; sleep 8.5
+  done
+  # The click reaches omarchy-agent (a stand-in here) with the task and the file's path only.
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/agent-called"\n' "$box" >"$box/bin/omarchy-agent"
+  chmod +x "$box/bin/omarchy-agent"
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- Backup 0 "" "Klicktest" "geheim-235" "[]" "{'urgency': <byte 2>}" 0 >/dev/null
+  sleep 1; probe testClick "$(L "Mit KI ansehen" "Ask AI")" >/dev/null; sleep 1.5
+  if grep -q "data only" "$box/agent-called" 2>/dev/null && ! grep -q geheim-235 "$box/agent-called" \
+      && grep -q geheim-235 "$XDG_RUNTIME_DIR"/omarchy-buddy/ai/note-*.txt; then echo "Klick: Agent gestartet, Text nur in der Datei"
+  else echo "Klick: kein Agent oder Text im Auftrag" >&2; fi
+}
 # Every variant of the island (no mode given).
 all_looks() {
   edge=top
@@ -334,6 +389,6 @@ all_looks() {
   ipc omarchy-buddy.looks radius 10 >/dev/null
   variant "dunkel-rund"
 }
-case $mode in wetter) weather_looks ;; start) start_looks ;; *) all_looks ;; esac
+case $mode in wetter) weather_looks ;; start) start_looks ;; ki) ki_looks ;; *) all_looks ;; esac
 grep -iE 'error|warn' "$box/log" | grep -v 'portal' >&2 || true
 echo "Fotos in $out"

@@ -256,7 +256,7 @@ Item {
   function markDone(item) {
     var ids = IslandLogic.doneBy(item, notifications.notes)
     if (!Object.keys(ids).length) return
-    prefs.doneIds = IslandLogic.addRead(prefs.doneIds, ids, Math.max(prefs.doneUpTo, now - IslandLogic.forYouKeep))
+    prefs.doneIds = IslandLogic.addRead(prefs.doneIds, ids, Math.max(prefs.doneUpTo, IslandLogic.forYouSince(now)))
     prefs.save()
   }
 

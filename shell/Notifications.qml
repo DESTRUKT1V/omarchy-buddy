@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Services.Mpris
 import Quickshell.Services.Notifications
 import "NoteLogic.js" as NoteLogic
+import "IslandLogic.js" as IslandLogic
 import "ToastLogic.js" as ToastLogic
 import "SettingsLogic.js" as SettingsLogic
 import "SessionLogic.js" as SessionLogic
@@ -193,10 +194,12 @@ Scope {
 
   function live(key) { return refsVersion >= 0 && !!refs[key] }
 
-  // Omarchy's buttons always, the sender's while it listens.
+  // Omarchy's buttons always, the sender's while it listens, "Mit KI
+  // ansehen" while the setting is on and a default agent is set (#235).
+  readonly property bool aiOn: app.settings.values.aiButton && app.sessions.defaultAgent !== ""
   function liveActions(item) {
     if (!item || !item.key) return []
-    return NoteLogic.noteButtons(item, live(item.key))
+    return NoteLogic.noteButtons(item, live(item.key), aiOn, Theme.lang)
   }
 
   // Click on a notification: its own command, its default action, or else
@@ -234,6 +237,8 @@ Scope {
     var m = /^exec:(\d+)$/.exec(id)
     var argv = m && item.execActions && item.execActions[m[1]] ? NoteLogic.execArgv(item.execActions[m[1]].argv) : null
     if (argv) Quickshell.execDetached(argv)
+    // item.ai: no sender buttons, so a sender's own action id "ai" never lands here.
+    else if (id === "ai" && item.ai === true && aiOn) app.runWithInput([app.repo + "/bin/omarchy-buddy-analyze"], NoteLogic.aiInput(item))
     else invokeAction(item, id)
     finishNote(item)
   }
@@ -265,12 +270,10 @@ Scope {
     app.touch()
   }
 
-  // Everything a bundled pop-up stands for (the sender's messages of the
-  // last hour) is closed at the sender.
+  // Everything a bundled pop-up stands for (all earlier messages of its
+  // sender, the same set read and done take: IslandLogic.doneBy) is closed at the sender.
   function closeBundle(toast) {
-    var keys = NoteLogic.recentInGroup(notes, toast.group, toast.time - 3600)
-    for (var i = 0; i < keys.length; i++) release(keys[i], true)
-    release(toast.key, true)
+    for (var key in IslandLogic.doneBy(toast, notes)) release(key, true)
   }
 
   // Deleting from the history can be undone for a few seconds; only then

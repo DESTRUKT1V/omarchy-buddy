@@ -31,16 +31,20 @@ TEST_KEY = "buddy-test-"  # tests/gallery's items; they do not count against NEW
 SAY = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "omarchy-buddy-say")
 
 
-def urlopen(url, timeout, agent="omarchy-buddy"):
+def urlopen(url, timeout, agent="omarchy-buddy", headers=None, data=None):
     """urllib's urlopen, except that a redirect's body is never read: urllib
-    reads all of it, unbounded, before it follows (catalog review, #230)."""
+    reads all of it, unbounded, before it follows (catalog review, #230).
+    headers (Authorization …) go to url only, never on to a redirect's target;
+    data makes it a POST."""
     import urllib.request  # only the network checks need it
 
     class Redirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             fp.close()  # urllib's fp.read() then returns b""
             return super().redirect_request(req, fp, code, msg, headers, newurl)
-    req = urllib.request.Request(url, headers={"User-Agent": agent})
+    req = urllib.request.Request(url, data, headers={"User-Agent": agent})
+    for k, v in (headers or {}).items():
+        req.add_unredirected_header(k, v)
     return urllib.request.build_opener(Redirect).open(req, timeout=timeout)
 
 

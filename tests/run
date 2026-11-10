@@ -2,8 +2,10 @@
 # All tests, without the shell: the island's rules (tests/*.test.js, Node),
 # the recorded Claude Code hook inputs and the hook's decisions
 # (tests/hook-test.py), the setup in a sandbox HOME (tests/setup-test.py),
-# the feed with fixed inputs (tests/feed-test.py), the Spotify helper against
-# a stand-in server (tests/spotify-test.py), the update check's
+# the feed with fixed inputs (tests/feed-test.py), the git watcher against a
+# local bare repo (tests/gitwatch-test.py), the Spotify helper against
+# a stand-in server (tests/spotify-test.py), "Mit KI ansehen" with a
+# stand-in agent (tests/analyze-test.py), the update check's
 # Rückfall (tests/check-test.sh), install.sh and the stable clone
 # (tests/install-test.sh) and, byte for byte, what the hook and the
 # setup write (tests/golden-test.py). Takes a few seconds.
@@ -11,7 +13,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 status=0
 node --test tests/*.test.js || status=1
-for t in tests/hook-test.py tests/setup-test.py tests/feed-test.py tests/spotify-test.py tests/check-test.sh tests/install-test.sh tests/golden-test.py; do
+for t in tests/analyze-test.py tests/hook-test.py tests/setup-test.py tests/feed-test.py tests/gitwatch-test.py tests/spotify-test.py tests/check-test.sh tests/install-test.sh tests/golden-test.py; do
   "$t" || status=1
 done
 exit $status

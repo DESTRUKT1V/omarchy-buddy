@@ -19,10 +19,9 @@ Column {
   Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
   width: Theme.openWidth
   spacing: Theme.s(14)
-  // By the hour, not with every tick of `now`: the lists are rebuilt only then.
-  readonly property real hour: Math.floor(app.now / 3600) * 3600
+  readonly property real since: IslandLogic.forYouSince(app.now)
   readonly property var forYou: IslandLogic.forYou(app.notifications.groups, app.notifications.notes, app.news.items,
-                                                   app.prefs.doneUpTo, app.prefs.doneIds, hour - IslandLogic.forYouKeep)
+                                                   app.prefs.doneUpTo, app.prefs.doneIds, since)
   readonly property bool hasForYou: app.sessions.needsCount > 0 || forYou.notes.length > 0 || forYou.news.length > 0
   // Open again at the top, where what needs the user is; a long session list folds again.
   onShownChanged: if (shown) { list.contentY = 0; app.sessions.unfolded = false }

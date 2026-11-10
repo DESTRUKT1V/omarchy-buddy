@@ -3,6 +3,65 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.3.0 – 2026-11-10
+
+- **"Ask AI" on error notifications** (#235): a critical notification
+  without a button of its own gets "Ask AI" (German: „Mit KI ansehen“), in
+  the pop-up and in the history, like Omarchy's "Process crashed". It opens
+  Omarchy's default agent, which looks into what is behind it and asks
+  before changing anything. Never on chats, mail, appointments, music or
+  calls, and not without a default agent. On by default, off under
+  settings → "Ask AI about errors". The notification reaches the agent as a
+  file only you can read, never as a command-line argument; the agent runs
+  without permission prompts, so the README names the remaining risk.
+- **Orca in the update item** (#223): with Orca's official AppImage
+  extracted to `~/.local/opt/orca`, a newer release shows up as
+  "Updates: Orca 1.4.253, …" instead of a separate "Orca … released".
+  "Update" downloads the AppImage, checks its SHA512 against the
+  release's `latest-linux.yml`, extracts it and swaps the folder (the old
+  one stays until that worked); the `orca-ide` command and the menu entry
+  keep working. While Orca runs it says to quit Orca first.
+- **Update watcher for software installed with git** (#224): Omarchy
+  plugins, oh-my-zsh with its custom plugins and themes, and other clones in
+  `~/.local/share`, `~/.local/opt` and your home folder are found by
+  themselves and checked hourly with `git ls-remote` (no download); new
+  versions join the update item ("2 plugins, oh-my-zsh"). The update
+  terminal updates them before `omarchy update`, each after showing the diff
+  and asking: plugins through `omarchy plugin update`, oh-my-zsh through its
+  upgrade script, the rest only as a fast-forward of a clean clone. Your own
+  repos (own GitHub account, ssh remotes, local paths, `~/Projects` …) are
+  never touched; each clone can be switched off under settings → Sources →
+  Git software, which also says which ones are left alone (local changes, no
+  branch) and which new version needs a build step (#225).
+  A clone whose own `.git/config` sets anything beyond what `git clone`
+  writes (a folder copied in with its own fsmonitor, filter or credential
+  helper would otherwise run commands at every check) is not watched; git
+  talks only https, stays out of submodules and runs no hooks (#228).
+  Such a clone is still listed under Git software, without a switch:
+  "Not watched: own Git settings"; nothing but reading its config runs
+  in it (#232).
+- **Uptime Kuma behind a login** (#240): a status page behind a login
+  server that hands out OAuth2 tokens (such as Authelia) can be read with
+  `"kuma_auth"` in `config.json` (token URL, client ID, a file with the
+  secret). The feed asks for a `client_credentials` token for the page's
+  API (`resource`, #244), sends it only to the page, never on to a
+  redirect, and keeps it in memory only. Without `kuma_auth` nothing
+  changes.
+- **Cut-off news unfold** (#248): a news item without a link or button
+  whose text is cut off shows all of it on a click (or Enter), in "For you"
+  and under News, like notifications in the history already do.
+- **Orca's version is read again**: it sits ~7 MB into `app.asar`, past
+  the 4 MB the feed read; now taken from the archive's index.
+- **No more "21 mise tools"**: Omarchy's lazy tools, which mise lists
+  before they were ever installed, no longer count as updates.
+
+- **× works on day-old items** (#245): an item in "For you" between 24 and
+  25 hours old could not be taken out with ×; the list and the click now
+  count the 24 hours the same way.
+- **"Close" on a bundled pop-up closes all of it** (#249): the sender
+  heard only about the messages of the last hour; now about every message
+  the pop-up stood for.
+
 ## 1.2.5 – 2026-11-08
 
 - **A redirect cannot fill the memory** (#230, review for

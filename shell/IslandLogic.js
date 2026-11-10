@@ -275,6 +275,12 @@ function unread(news, notes, lastRead, readIds) {
 // → the block's notification groups and news, and the others for below.
 var forYouKeep = 24 * 3600
 
+// The block's `since` at `now`: by the hour, so the list is rebuilt only then.
+// markDone keeps doneIds from the same bound, or × on a 24–25 h old one does nothing (#245).
+function forYouSince(now) {
+  return Math.floor(now / 3600) * 3600 - forYouKeep
+}
+
 function pending(id, time, doneUpTo, doneIds, since) {
   return Number(time || 0) > Math.max(doneUpTo, since) && !(doneIds && doneIds[id])
 }
@@ -372,6 +378,15 @@ function windowAddress(a) {
 // Orca pane. Its action (actionCommand) has a button of its own (actionLabel).
 function clickable(item) {
   return !!(item && (item.url || item.window || item.orca))
+}
+
+// What a click on a news item does (#248): "open" its link, window or Orca;
+// without those and without a button "unfold" a cut-off text and "fold" it
+// again; "" nothing.
+function newsClick(item, truncated, open, lang) {
+  if (clickable(item)) return "open"
+  if (actionLabel(item.action, lang) || !(truncated || open)) return ""
+  return open ? "fold" : "unfold"
 }
 
 // The label of a news item's action button, "" for none (#169).

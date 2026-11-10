@@ -167,6 +167,7 @@ function makeNote(raw, key, time) {
   var sync = String(raw.sync || "")
   var player = media ? raw.player : null
   var commands = execActions(raw.execActions) || []
+  var kind = media ? "" : web && web.kind || messageKind(app, raw.entry, raw.category)
   if (player && player.trackArtUrl) image = player.trackArtUrl
   if (player && player.trackTitle) { summary = player.trackTitle; body = player.trackArtist || "" }
   return { key: key, app: app, summary: summary, body: body, icon: icon,
@@ -175,7 +176,9 @@ function makeNote(raw, key, time) {
            expire: Number(raw.expire || 0), actions: web ? webActions(raw.actions) : raw.actions || [], reply: raw.reply === true,
            replyHint: String(raw.replyHint || ""), media: media,
            site: site,
-           kind: media ? "" : web && web.kind || messageKind(app, raw.entry, raw.category),
+           kind: kind,
+           ai: wantsAi({ urgency: Number(raw.urgency), media: media, kind: kind, category: raw.category, app: app,
+                         entry: raw.entry, exec: raw.exec, execActions: commands, actions: raw.actions, reply: raw.reply }),
            replaces: media || sync !== "",
            // A running display (volume, brightness) only pops up; so does
            // Omarchy's feedback, unless it brings buttons (a saved recording).
@@ -183,6 +186,28 @@ function makeNote(raw, key, time) {
            // Orca's "Claude finished" is what O-Morchy reports itself.
            seen: /^orca$/i.test(app) && /claude/i.test(summary),
            group: media ? app : sync ? app + "\nsync:" + sync : app + "\n" + (site ? site + "\n" : "") + summary }
+}
+
+// "Mit KI ansehen" (#235): a critical notification that brings no button of
+// its own (no command, no sender buttons, no reply field) gets one that hands
+// it to the default agent (bin/omarchy-buddy-analyze). Never for messages from
+// people (chat, mail, appointments), music or calls: their text is someone
+// else's words, and the agent runs without asking (omarchy-agent).
+var callApps = /\b(calls|gnome-calls|plasma-dialer|linphone|jami|skype|zoom)\b/i
+
+function wantsAi(note) {
+  var names = String(note.app || "") + "\n" + String(note.entry || "")
+  return note.urgency === 2 && !note.media && !note.kind && !/^call(\.|$)/i.test(String(note.category || ""))
+    && !callApps.test(names) && !execArgv(note.exec) && !(note.execActions || []).length
+    && !buttons(note.actions).length && note.reply !== true
+}
+
+// What the agent gets on stdin: sender, title and text as the user saw them
+// (a pop-up carries title and body, a history record summary and body).
+function aiInput(item) {
+  var toast = item.note === true
+  return JSON.stringify({ sender: senderOf(item), title: toast ? item.title : titleOf(item),
+                          text: toast ? item.body || "" : textOf(item) })
 }
 
 // What pops up:
@@ -225,7 +250,7 @@ function noteToast(note, count) {
            level: critical ? "error" : "info", sticky: critical || note.kind === "event", media: note.media, ephemeral: note.ephemeral,
            duration: toastDuration(note),
            icon: note.icon, image: note.image, glyph: note.glyph, exec: note.exec, execActions: note.execActions, kind: note.kind,
-           actions: note.actions, reply: note.reply, replyHint: note.replyHint }
+           actions: note.actions, reply: note.reply, replyHint: note.replyHint, ai: note.ai === true }
 }
 
 // Where a new message of `group` goes: into the pop-up on screen (not while
@@ -323,14 +348,6 @@ function capped(notes) {
   return notes.filter(function(o) { return (ProbeLogic.isTest(o) ? ++test : ++real) <= historyLimit })
 }
 
-// Keys of the group's records from the last hour (what "Schließen" on a
-// bundled pop-up closes).
-function recentInGroup(notes, group, since) {
-  var keys = []
-  for (var i = 0; i < notes.length && notes[i].time > since; i++) if (notes[i].group === group) keys.push(notes[i].key)
-  return keys
-}
-
 // The history file after a shell start. Live objects died with the old
 // shell: no actions, no replies. Music from before #139 goes. Null when the
 // file holds no list.
@@ -411,10 +428,13 @@ function execActions(text) {
 
 // Every button a notification shows, in Omarchy's order: its own commands
 // first (they run without the sender, also from the history), then the
-// sender's while it still listens. `id` is "exec:<n>" for a command.
-function noteButtons(item, live) {
+// sender's while it still listens, last "Mit KI ansehen" (`ai`: the setting
+// is on and a default agent is set). `id` is "exec:<n>" for a command, "ai"
+// for the agent.
+function noteButtons(item, live, ai, lang) {
   var out = (item.execActions || []).map(function(a, i) { return { id: "exec:" + i, text: a.label } })
-  return out.concat(live ? buttons(item.actions) : [])
+  out = out.concat(live ? buttons(item.actions) : [])
+  return ai && item.ai === true ? out.concat([{ id: "ai", text: Strings.tl(lang, "btn.askAi") }]) : out
 }
 
 // What Omarchy's "act" key (Super + Komma, notifications.act) does with the

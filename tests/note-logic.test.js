@@ -179,7 +179,7 @@ test("Verlauf: Testmeldungen drücken keine echten hinaus und landen nicht in de
   assert.equal(L.withRestored(notes, []).length, notes.length)
 })
 
-test("Verlauf: Gruppen, ungelesen, Schließen der letzten Stunde", () => {
+test("Verlauf: Gruppen, ungelesen", () => {
   const notes = [note({ summary: "Tom" }, "a"), note({ summary: "Ina" }, "b"), note({ summary: "Tom" }, "c")]
   notes[2].time = 10
   const groups = L.groups(notes, 50)
@@ -187,7 +187,6 @@ test("Verlauf: Gruppen, ungelesen, Schließen der letzten Stunde", () => {
   assert.equal(L.groups(notes, 100)[0].unread, false)
   // als Pop-up gesehen: gelesen
   assert.deepEqual(L.groups(notes, 50, { a: 100 }).map(g => g.unread), [false, true])
-  assert.deepEqual(L.recentInGroup(notes, "Beeper\nTom", 50), ["a"])
   // keine Grenze bei 20 Absendern (F4)
   const many = []
   for (let i = 0; i < 60; i++) many.push(note({ summary: "s" + i }, "k" + i))
@@ -525,4 +524,43 @@ test("Benachrichtigungsdienst erst, wenn Omarchys eigener aus ist (#187)", () =>
   // halb geschrieben: bleibt, wie es war
   assert.equal(L.serving('{"version": 1, "disab', true), true)
   assert.equal(L.serving('{"version": 1, "disab', false), false)
+})
+
+test("Mit KI ansehen: nur kritisch, ohne eigenen Knopf, nie Nachrichten, Musik, Anrufe (#235)", () => {
+  const crit = f => note(Object.assign({ app: "backup", summary: "Sicherung fehlgeschlagen", body: "Platte voll", urgency: 2 }, f))
+  assert.equal(crit().ai, true)
+  assert.equal(crit({ urgency: 1 }).ai, false, "nur kritisch")
+  assert.equal(crit({ app: "Signal" }).ai, false, "Chat")
+  assert.equal(crit({ app: "Thunderbird" }).ai, false, "Mail")
+  assert.equal(crit({ category: "im.received" }).ai, false, "Chat nach Kategorie")
+  assert.equal(crit({ app: "evolution-alarm-notify" }).ai, false, "Termin")
+  assert.equal(crit({ app: "Spotify" }).ai, false, "Musik")
+  assert.equal(crit({ category: "call.incoming" }).ai, false, "Anruf nach Kategorie")
+  assert.equal(crit({ app: "GNOME Calls" }).ai, false, "Anruf-App")
+  assert.equal(crit({ exec: '["omarchy-agent-crash","1"]' }).ai, false, "eigener Klick-Befehl")
+  assert.equal(crit({ execActions: recording.actions }).ai, false, "Omarchys Knöpfe")
+  assert.equal(crit({ actions: [{ id: "retry", text: "Nochmal" }] }).ai, false, "Knöpfe des Absenders")
+  assert.equal(crit({ actions: [{ id: "default", text: "" }] }).ai, true, "nur ein Klick ist kein Knopf")
+  assert.equal(crit({ reply: true }).ai, false, "Antwortfeld")
+  // Pop-up und Verlauf tragen es, auch über einen Shell-Neustart
+  const n = crit()
+  assert.equal(L.noteToast(n).ai, true)
+  assert.equal(L.restoreHistory(JSON.stringify([n]))[0].ai, true)
+  // als letzter Knopf, nur wenn eingeschaltet und ein Standard-Agent da ist
+  assert.deepEqual(L.noteButtons(n, true, true, "de"), [{ id: "ai", text: "Mit KI ansehen" }])
+  assert.deepEqual(L.noteButtons(n, false, true, "en"), [{ id: "ai", text: "Ask AI" }], "auch ohne lebenden Absender (Verlauf)")
+  assert.deepEqual(L.noteButtons(n, true, false, "de"), [])
+  assert.deepEqual(L.noteButtons(note({}), true, true, "de"), [])
+  const both = Object.assign({}, n, { execActions: [{ label: "Log", argv: ["less"] }] })
+  assert.deepEqual(L.noteButtons(both, true, true, "de").map(b => b.id), ["exec:0", "ai"])
+})
+
+test("Mit KI ansehen: was der Agent bekommt, aus Pop-up und Verlauf gleich (#235)", () => {
+  const n = note({ app: "backup", summary: "Sicherung fehlgeschlagen", body: "Platte voll", urgency: 2 })
+  const want = { sender: "backup", title: "Sicherung fehlgeschlagen", text: "Platte voll" }
+  assert.deepEqual(JSON.parse(L.aiInput(n)), want)
+  assert.deepEqual(JSON.parse(L.aiInput(L.noteToast(n))), want)
+  const untitled = note({ app: "backup", summary: "", body: "Platte voll", urgency: 2 })
+  assert.deepEqual(JSON.parse(L.aiInput(L.noteToast(untitled))), { sender: "backup", title: "Platte voll", text: "" })
+  assert.deepEqual(JSON.parse(L.aiInput(untitled)), { sender: "backup", title: "Platte voll", text: "" })
 })

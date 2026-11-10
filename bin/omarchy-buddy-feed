@@ -3,13 +3,17 @@
 # omarchy-buddy-say. Run by omarchy-buddy-feed.timer every 15 minutes; the island's
 # "jetzt prüfen" runs it with --now.
 #
-#   System  pending updates every 12 h, one item for all package managers
-#           (lib/updates.py; a click runs omarchy-buddy-update), full disks,
+#   System  pending updates every 12 h, one item for all package managers,
+#           Orca's AppImage and, checked hourly, software installed with
+#           git clone (lib/updates.py, lib/orca.py, lib/gitwatch.py; a click
+#           runs omarchy-buddy-update), full disks,
 #           failed units, crashes (coredumpctl; a click runs omarchy-buddy-crash)
 #   Coding  new Claude Code version with the top changelog lines, new Omarchy
-#           releases, Orca releases (only with Orca installed)
+#           releases, Orca releases (only with Orca installed and not
+#           already in the update item)
 #   Kuma    monitors down and back up on an Uptime Kuma status page (only with
-#           "feed": {"kuma": "https://HOST/status/SLUG"}), every run
+#           "feed": {"kuma": "https://HOST/status/SLUG"}; behind a login with
+#           "kuma_auth", an OAuth2 token, #240), every run
 #   GitHub  review requests, mentions, failed workflow runs and replies in
 #           own issues/PRs (gh api notifications, only with gh signed in; "feed":
 #           {"github": false} switches it off), every run
@@ -20,8 +24,12 @@
 # What was already reported is remembered in ~/.local/state/omarchy-buddy/feed.json;
 # the very first run only records the current state. Network checks run at
 # most hourly unless --now is given. --test-kuma URL only says whether URL is
-# a status page that answers ("ok", "unreachable", "invalid"; the settings page).
+# a status page that answers ("ok", "unreachable", "invalid"; the settings page),
+# --git-list names the git clones it watches, one "~/path" per line, with a
+# tab and what the settings page says about it, if anything (no network, #225);
+# "config" for a clone not watched for its own git config (#232).
 
+import base64
 import fcntl
 import json
 import os
@@ -37,6 +45,8 @@ NET_EVERY = 3600
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
 import buddy  # noqa: E402
+import gitwatch  # noqa: E402
+import orca  # noqa: E402
 import updates  # noqa: E402
 from buddy import say, private_dir, private_open  # noqa: E402
 from texts import t, first_name  # noqa: E402
@@ -62,16 +72,17 @@ FETCH_MAX = 2 * 2**20  # bytes: a bigger answer is broken or hostile (a status p
 FETCH_SECONDS = 30  # for the whole answer: timeout= only bounds each read, a server can drip forever (#227)
 
 
-def fetch(url, timeout=10, head=False):
+def fetch(url, timeout=10, head=False, headers=None, data=None):
     """The answer as text, at most FETCH_MAX bytes within FETCH_SECONDS. A
     longer or slower one raises ValueError (TimeoutError) like a broken
-    answer; with head=True a longer one is cut there."""
+    answer; with head=True a longer one is cut there. headers and data
+    (a POST) as in buddy.urlopen."""
     def late(*_):
         raise TimeoutError(f"no whole answer in {FETCH_SECONDS} s: {url}")
     old = signal.signal(signal.SIGALRM, late)
     signal.setitimer(signal.ITIMER_REAL, FETCH_SECONDS)
     try:
-        with buddy.urlopen(url, timeout, "omarchy-buddy-feed") as r:
+        with buddy.urlopen(url, timeout, "omarchy-buddy-feed", headers, data) as r:
             data = r.read(FETCH_MAX + 1)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
@@ -130,11 +141,31 @@ def check_updates(st, quiet):
         counts[name] = n
         if name == "pacman":
             omarchy = updates.omarchy_ready(code, out)
+    installed = orca.version()
+    if not installed:
+        st.pop("orca_update", None)
+    else:
+        try:
+            latest = orca.release(fetch(orca.latest_url()))[0]
+            st["orca_update"] = latest if orca.newer(latest, installed) else ""
+            worked = True
+        except (OSError, ValueError) as e:  # offline: keeps what it said last time
+            print(f"omarchy-buddy-feed: orca: {e}", file=sys.stderr)
     if not worked:
         return
     st["updates_checked"] = time.time()
     st["update_counts"], st["omarchy_ready"] = counts, omarchy
-    parts = updates.summary(counts, omarchy)
+    post_updates(st)
+
+
+def pending(st):
+    return updates.summary(st.get("update_counts", {}), st.get("omarchy_ready", False),
+                           st.get("orca_update", ""), st.get("git_updates", {}))
+
+
+def post_updates(st):
+    """The one update item, replaced when the picture changed."""
+    parts = pending(st)
     sig = json.dumps(parts)
     if sig == st.get("update_sig"):
         return
@@ -145,8 +176,47 @@ def check_updates(st, quiet):
             source="system", key=UPDATES_KEY, action="updates")
 
 
+def check_git(st, quiet):
+    """Hourly (#224): the git clones at the software places (lib/gitwatch.py).
+    New ones are taken in with one "Neu im Update-Watcher" item, gone ones
+    drop out; a new version on the remote goes into the update item. A
+    clone that cannot be asked (offline) keeps what it said last time."""
+    found, off = gitwatch.find(), gitwatch.switched_off()
+    known = st.get("git_repos", {})
+    new = [p for p in found if p not in known and p not in off]
+    st["git_repos"] = found
+    if new and not quiet:
+        say(t("feed.git.new", names=", ".join(gitwatch.name(p) for p in new)), t("feed.git.new.body"), source="system")
+    todo = {p: k for p, k in st.get("git_updates", {}).items() if found.get(p) == k and p not in off}
+    for path, kind in found.items():
+        if path in off:
+            continue
+        state = gitwatch.check(gitwatch.full(path), kind)
+        if state in gitwatch.COUNTED:
+            todo[path] = kind
+        elif state is not None:
+            todo.pop(path, None)
+    st["git_updates"] = todo
+    post_updates(st)
+
+
+def git_list():
+    """"~/path\tstate" per clone (gitwatch.offline; build from the last network run).
+    A clone with its own config (#228) is only named: "config", nothing runs in it."""
+    try:
+        with open(STATE) as f:
+            todo = json.load(f).get("git_updates", {})
+    except (OSError, ValueError, AttributeError):
+        todo = {}
+    out = ""
+    for path, kind, ok in gitwatch.clones():
+        state = gitwatch.offline(gitwatch.full(path), kind, todo.get(path) == kind) if ok else "config"
+        out += path + ("\t" + state if state else "") + "\n"
+    return out
+
+
 def update_title(parts):
-    """"Updates: Omarchy, 12 Pakete, 1 mise-Tool" from updates.summary()."""
+    """"Updates: Omarchy, Orca 1.4.253, 12 Pakete, 1 mise-Tool" from updates.summary()."""
     return t("feed.updates", parts=", ".join(t("updates." + g + (".one" if n == 1 else ""), n=n) for g, n in parts))
 
 
@@ -303,15 +373,6 @@ def check_release(st, quiet, repo, name, installed=None):
         st[key] = tag
 
 
-def orca_version():
-    try:
-        with open(os.path.join(buddy.HOME, ".local/opt/orca/resources/app.asar"), "rb") as f:
-            m = re.search(rb'"name":\s*"orca"[^}]{0,400}?"version":\s*"([\d.]+)"', f.read(4_000_000))
-            return m.group(1).decode() if m else None
-    except OSError:
-        return None
-
-
 KUMA_SETTLE = 600  # back up only after 10 min without a down beat: a flapping monitor is one outage
 
 
@@ -327,10 +388,54 @@ def kuma_api(url):
     return base + m.group(2), base + "heartbeat/" + m.group(2)
 
 
+KUMA_TOKENS = {}  # (token_url, client_id, resource) → (token, renew after); in memory only, never in feed.json
+
+
+def kuma_headers(url, renew=False):
+    """For a status page behind a login (Authelia, #240): "feed": {"kuma_auth":
+    {"token_url", "client_id", "secret_file"}} in config.json gets an OAuth2
+    client_credentials token for the page's API prefix and sends it as
+    Authorization: Bearer. {} without kuma_auth."""
+    from urllib.parse import quote, urlencode, urlsplit
+    feed = buddy.config().get("feed")
+    auth = feed.get("kuma_auth") if isinstance(feed, dict) else None
+    if not isinstance(auth, dict):
+        return {}
+    token_url, client_id, secret_file = (auth.get(k) for k in ("token_url", "client_id", "secret_file"))
+    if not all(isinstance(v, str) and v for v in (token_url, client_id, secret_file)):
+        raise ValueError("kuma_auth needs token_url, client_id and secret_file")
+    t_url = urlsplit(token_url)
+    if t_url.scheme != "https" and t_url.hostname not in ("127.0.0.1", "localhost"):
+        raise ValueError(f"kuma_auth: token_url must be https: {token_url}")  # the secret travels there
+    # Authelia compares audience with the full URL, resource as a path prefix (#239)
+    resource = url[:url.rindex("/api/status-page/") + len("/api/status-page/")]
+    key = (token_url, client_id, resource)
+    if renew or KUMA_TOKENS.get(key, ("", 0))[1] <= time.time():
+        with open(os.path.expanduser(secret_file)) as f:
+            secret = f.read().strip()
+        basic = base64.b64encode(f"{quote(client_id, safe='')}:{quote(secret, safe='')}".encode()).decode()
+        body = urlencode({"grant_type": "client_credentials", "scope": "authelia.bearer.authz", "resource": resource})
+        answer = json.loads(fetch(token_url, headers={"Authorization": "Basic " + basic}, data=body.encode()))
+        expires = float(answer.get("expires_in", 300))
+        KUMA_TOKENS[key] = (str(answer["access_token"]), time.time() + expires - min(60, expires / 2))
+    return {"Authorization": "Bearer " + KUMA_TOKENS[key][0]}
+
+
+def kuma_fetch(url):
+    """fetch() with kuma_headers; a 401 gets a new token once."""
+    headers = kuma_headers(url)
+    try:
+        return fetch(url, headers=headers)
+    except OSError as e:
+        if getattr(e, "code", None) != 401 or not headers:
+            raise
+    return fetch(url, headers=kuma_headers(url, renew=True))
+
+
 def kuma_read(api):
     """The monitors' names and heartbeats from the two endpoints; raises
     OSError, ValueError … when the page does not answer as a status page."""
-    page, beats = json.loads(fetch(api[0])), json.loads(fetch(api[1]))["heartbeatList"]
+    page, beats = json.loads(kuma_fetch(api[0])), json.loads(kuma_fetch(api[1]))["heartbeatList"]
     return {str(m["id"]): str(m["name"]) for g in page["publicGroupList"] for m in g["monitorList"]}, beats
 
 
@@ -501,7 +606,7 @@ def morning(st):
     if now.hour < 7 or st.get("morning") == today:
         return
     st["morning"] = today
-    found = updates.summary(st.get("update_counts", {}), st.get("omarchy_ready", False)) if update_news() else []
+    found = pending(st) if update_news() else []
     say(t("feed.morning" if now.hour < 12 else "feed.morning.later", name=first_name()),
         update_title(found) if found else t("feed.morning.current"), source="buddy", level="good")
 
@@ -509,6 +614,9 @@ def morning(st):
 # ------------------------------------------------------------------- main
 
 def main():
+    if "--git-list" in sys.argv[1:2]:  # the settings page: the clones it can switch off
+        print(git_list(), end="")
+        return
     if "--test-kuma" in sys.argv[1:2]:
         print(test_kuma(sys.argv[2] if len(sys.argv) > 2 else ""))
         return
@@ -545,11 +653,14 @@ def main():
             checks.append(check_updates)
         net = force or quiet or time.time() - st.get("net_checked", 0) >= NET_EVERY
         if net:
+            if update_news():
+                checks.append(check_git)
             checks += [check_claude_code,
                        lambda s, q: check_release(s, q, "basecamp/omarchy", "Omarchy", s.get("omarchy_version", "").split("-")[0] or None)]
-            orca = orca_version()
-            if orca or shutil.which("orca-ide"):
-                checks.append(lambda s, q: check_release(s, q, "stablyai/orca", "Orca", orca))
+            have = orca.version()
+            # Orca's AppImage under ~/.local/opt is in the update item; otherwise "Orca X erschienen"
+            if (have or shutil.which("orca-ide")) and not (have and update_news()):
+                checks.append(lambda s, q: check_release(s, q, orca.REPO, "Orca", have))
         for check in checks:
             try:
                 check(st, quiet)

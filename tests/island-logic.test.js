@@ -295,6 +295,12 @@ test("Knopf an einer Neuigkeit: Updates und Absturz starten ihr Skript aus dem C
   assert.equal(L.actionCommand("", "/r"), null)
   assert.equal(L.clickable({ action: "crash:1" }), false, "die Aktion hat ihren Knopf")
   assert.equal(L.clickable({ url: "https://x" }), true)
+  assert.equal(L.newsClick({ url: "https://x" }, true, false, "de"), "open", "mit Link wie bisher (#248)")
+  assert.equal(L.newsClick({}, true, false, "de"), "unfold")
+  assert.equal(L.newsClick({}, false, true, "de"), "fold")
+  assert.equal(L.newsClick({}, false, false, "de"), "", "passt ganz hin: nichts zu klicken")
+  assert.equal(L.newsClick({ action: "crash:1" }, true, false, "de"), "", "mit Knopf wie bisher")
+  assert.equal(L.newsClick({ action: "anderes" }, true, false, "de"), "unfold", "kein Knopf")
   assert.equal(L.actionLabel("crash:1", "de"), "Untersuchen")
   assert.equal(L.actionLabel("updates", "en"), "Update")
   assert.equal(L.actionLabel("anderes", "de"), "")
@@ -354,6 +360,13 @@ test("Für dich (#175, #178): Menschen, Termine, Kritisches und Probleme bleiben
   assert.deepEqual(L.forYou([{ group: "mail", note: two[0] }], two, [], 0, { b: 30 }, 0).notes.length, 1)
   assert.deepEqual(L.forYou([], [], [], 0, {}, 0), { notes: [], otherNotes: [], news: [], otherNews: [] })
   assert.equal(L.forYouKeep, 24 * 3600)
+  // #245: a note 24 h 11 min old still shows (bound by the hour), so × must keep its id.
+  const now = 100 * 3600 + 14 * 60, old = now - 24 * 3600 - 11 * 60
+  assert.equal(L.forYouSince(now), 76 * 3600)
+  const one = [n("x", "nas", old, "", 2)]
+  assert.equal(L.forYou([{ group: "nas", note: one[0] }], one, [], 0, {}, L.forYouSince(now)).notes.length, 1)
+  const done = L.addRead({}, { x: old }, L.forYouSince(now))
+  assert.equal(L.forYou([{ group: "nas", note: one[0] }], one, [], 0, done, L.forYouSince(now)).notes.length, 0)
 })
 
 test("Für dich erledigt (#178): Neuigkeit, Nachricht mit den früheren ihres Absenders", () => {
@@ -363,6 +376,8 @@ test("Für dich erledigt (#178): Neuigkeit, Nachricht mit den früheren ihres Ab
   assert.deepEqual(L.doneBy(notes[1], notes), { b: 20, a: 10 })
   assert.deepEqual(L.doneBy({ note: true, key: "c", group: "g", time: 30 }, notes), { c: 30, b: 20, a: 10 })
   assert.deepEqual(L.doneBy(null, notes), {})
+  // #249: Schließen am Bündel nimmt denselben Satz, auch Nachrichten von vor über einer Stunde
+  assert.deepEqual(L.doneBy({ note: true, key: "d", group: "g", time: 30 + 7200 }, notes), { d: 7230, c: 30, b: 20, a: 10 })
 })
 
 test("Neuigkeit für den Screenreader: Stufe und ungelesen in Worten", () => {

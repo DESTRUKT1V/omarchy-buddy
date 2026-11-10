@@ -22,7 +22,7 @@ feed.say = lambda title, body="", **kw: said.append(dict(kw, title=title, body=b
 feed.run = lambda cmd, timeout=30: outputs.get(cmd[0], (1, ""))
 pages = {}
 real_fetch = feed.fetch
-def fetch(url, timeout=10, head=False):
+def fetch(url, timeout=10, head=False, headers=None, data=None):
     if url not in pages:
         raise OSError("offline")
     return pages[url]
@@ -41,7 +41,8 @@ up = feed.updates
 samples = {
     "pacman": (0, "linux 6.17.1-1 -> 6.17.2-1\nmesa 1:25.2.4-1 -> 1:25.2.5-1\nomarchy 3.1.0-1 -> 3.2.0-1\n\n"),
     "yay": (0, "deckcraft 0.9.0-2 -> 0.12.0-1 [1d2h]\ngridcraft 0.10.0-2 -> 0.13.0-1 [1d2h]\n"),
-    "mise": (0, '{"node": {"requested": "latest", "current": "24.1.0", "latest": "24.2.0"}, "go": {}}'),
+    "mise": (0, '{"node": {"requested": "latest", "current": "24.1.0", "latest": "24.2.0"}, "go": {"current": "1.25.0"},'
+                ' "amp": {"requested": "latest", "current": null, "latest": "0.0.1"}}'),
     "npm": (1, '{\n  "npm": {"current": "11.20.0", "wanted": "12.2.1", "latest": "12.2.1"}\n}\n'),
     "pnpm": (1, '{"typescript": {"current": "5.5.0", "latest": "5.6.0"}}'),
     "flatpak": (0, "org.mozilla.firefox\norg.gnome.Platform\n"),
@@ -59,6 +60,9 @@ broken = {"pacman": (1, "==> FEHLER: Datenbank nicht erreichbar"), "npm": (1, '{
           "mise": (0, "kein json"), "flatpak": (1, ""), "rustup": (0, "error: no network")}
 got = {name: up.count(name, *out) for name, out in broken.items()}
 check("Updates: Fehler und offline: None statt 0", set(got.values()) == {None}, got)
+lazy = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "mise-outdated.json")).read()
+check("Updates: mise zählt Omarchys nicht installierte Lazy-Tools nicht (aufgezeichnet, 21× current null)",
+      up.count("mise", 0, lazy) == 0 and len(json.loads(lazy)) == 21)
 check("Updates: Omarchy im pacman-Stand erkannt", up.omarchy_ready(*samples["pacman"]) and not up.omarchy_ready(2, ""))
 
 have_all = lambda program: True
@@ -73,6 +77,10 @@ check("Schritte: ohne Omarchy pacman und AUR einzeln",
       up.steps({"pacman": 1, "paru": 1, "flatpak": 2}, False, no_omarchy)
       == [["sudo", "pacman", "-Syu"], ["paru", "-Sua"], ["flatpak", "update"]])
 check("Schritte: nichts zu tun: leer", up.steps({}, False, have_all) == [])
+check("Schritte: Orca vor omarchy-update", up.steps({"pacman": 1}, False, have_all, "1.4.253")
+      == [["omarchy-buddy-update", "--orca"], ["omarchy-update"]])
+check("Updates: Orca mit Version gleich nach Omarchy",
+      up.summary({"pacman": 1}, True, "1.4.253") == [("omarchy", 1), ("orca", "1.4.253"), ("packages", 1)])
 
 installed = set()
 unsaid = []
@@ -465,6 +473,220 @@ except OSError:
 check("fetch: tröpfelnde Antwort bricht nach FETCH_SECONDS ab", isinstance(slow, float) and slow < 3, slow)
 check("Kuma: tröpfelnde Statusseite heißt nicht erreichbar",
       feed.test_kuma(f"http://127.0.0.1:{server.server_port}/status/x") == "unreachable")
+server.shutdown()
+
+# A status page behind Authelia (#240): an OAuth2 client_credentials token
+# (HTTP Basic, scope authelia.bearer.authz, resource = the page's API prefix) as
+# Authorization: Bearer, kept for its lifetime, one new token on a 401,
+# never sent on to a redirect, never in feed.json. Without kuma_auth: as before.
+import base64, urllib.parse  # noqa: E402
+SECRET = "geh:eim/Wort"
+auth = {"tokens": [], "valid": set(), "seen": [], "secret": SECRET}
+class Auth(http.server.BaseHTTPRequestHandler):
+    def answer(self, code, body=b"", **head):
+        self.send_response(code)
+        for k, v in head.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+    def do_POST(self):
+        form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
+        user, _, pw = base64.b64decode(self.headers.get("Authorization", "Basic ")[6:]).decode().partition(":")
+        auth["tokens"].append((urllib.parse.unquote(user), urllib.parse.unquote(pw), form))
+        if self.path != "/token" or urllib.parse.unquote(pw) != auth["secret"]:
+            return self.answer(401, b'{"error": "invalid_client"}')
+        token = f"tok{len(auth['tokens'])}"
+        auth["valid"].add(token)
+        self.answer(200, json.dumps({"access_token": token, "token_type": "bearer", "expires_in": 3599}).encode())
+    def do_GET(self):
+        auth["seen"].append((self.path, self.headers.get("Authorization")))
+        if self.path == "/api/status-page/weg":
+            return self.answer(302, Location=f"http://localhost:{self.server.server_port}/anderswo")
+        if self.path == "/anderswo" or (self.headers.get("Authorization") or "")[7:] in auth["valid"]:
+            body = {"publicGroupList": []} if "heartbeat" not in self.path else {"heartbeatList": {}}
+            return self.answer(200, json.dumps(body).encode())
+        self.answer(401)
+    def log_message(self, *a):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Auth)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{server.server_port}"
+def kuma_config(**kuma_auth):
+    with open(feed.buddy.CONFIG, "w") as f:
+        json.dump({"feed": {"kuma": base + "/status/x", **({"kuma_auth": kuma_auth} if kuma_auth else {})}}, f)
+secret_file = os.path.join(HOME, "kuma-secret")
+with open(secret_file, "w") as f:
+    f.write(SECRET + "\n")
+kuma_config()
+check("Kuma-Login: ohne kuma_auth wie bisher, ohne Authorization",
+      feed.test_kuma(base + "/status/x") == "unreachable" and auth["tokens"] == []
+      and [h for _, h in auth["seen"]] == [None], auth)
+kuma_config(token_url=base + "/token", client_id="omarchy buddy", secret_file=secret_file)
+auth["seen"].clear()
+check("Kuma-Login: Token geholt, beide Endpunkte mit Bearer", feed.test_kuma(base + "/status/x") == "ok"
+      and auth["seen"] == [("/api/status-page/x", "Bearer tok1"), ("/api/status-page/heartbeat/x", "Bearer tok1")], auth)
+user, pw, form = auth["tokens"][0]
+check("Kuma-Login: client_credentials per Basic, Scope und Resource = API-Präfix der Seite",
+      (user, pw) == ("omarchy buddy", SECRET) and form == {"grant_type": ["client_credentials"],
+      "scope": ["authelia.bearer.authz"], "resource": [base + "/api/status-page/"]}, auth["tokens"])
+feed.test_kuma(base + "/status/x")
+check("Kuma-Login: Token bleibt bis kurz vor Ablauf", len(auth["tokens"]) == 1, auth["tokens"])
+key = next(iter(feed.KUMA_TOKENS))
+feed.KUMA_TOKENS[key] = (feed.KUMA_TOKENS[key][0], 0)
+feed.test_kuma(base + "/status/x")
+check("Kuma-Login: abgelaufen: neues Token", len(auth["tokens"]) == 2 and auth["seen"][-1][1] == "Bearer tok2", auth)
+auth["valid"].clear()
+auth["seen"].clear()
+check("Kuma-Login: 401 holt einmal ein neues Token", feed.test_kuma(base + "/status/x") == "ok" and len(auth["tokens"]) == 3
+      and [h for _, h in auth["seen"]] == ["Bearer tok2", "Bearer tok3", "Bearer tok3"], auth["seen"])
+auth["secret"] = "anderes"
+auth["valid"].clear()
+check("Kuma-Login: falsches Geheimnis: nicht erreichbar, nur ein Versuch mehr",
+      feed.test_kuma(base + "/status/x") == "unreachable" and len(auth["tokens"]) == 4, auth["tokens"])
+auth["secret"] = SECRET
+st = {}
+feed.check_kuma(st, False, base + "/status/x")
+saved = json.dumps(st)
+check("Kuma-Login: weder Geheimnis noch Token im Zustand", st.get("kuma_fail") == 0 and SECRET not in saved
+      and "tok" not in saved, st)
+auth["seen"].clear()
+feed.test_kuma(base + "/status/weg")
+check("Kuma-Login: Authorization geht nicht an das Ziel einer Weiterleitung",
+      auth["seen"][:2] == [("/api/status-page/weg", "Bearer tok5"), ("/anderswo", None)], auth["seen"])
+kuma_config(token_url="http://auth.example.org/token", client_id="b", secret_file=secret_file)
+check("Kuma-Login: Token-Adresse ohne https wird abgelehnt (das Geheimnis reist dorthin)",
+      feed.test_kuma(base + "/status/x") == "unreachable" and len(auth["tokens"]) == 5, auth["tokens"])
+kuma_config(token_url=base + "/token", client_id="b")
+check("Kuma-Login: unvollständig: nicht erreichbar", feed.test_kuma(base + "/status/x") == "unreachable")
+os.remove(feed.buddy.CONFIG)
+server.shutdown()
+
+# Orca's AppImage under ~/.local/opt/orca (lib/orca.py, #223): its version
+# from app.asar (package.json lies past the first 4 MB), the update item,
+# and the install against a local server, with folders in the sandbox only.
+import base64, hashlib, struct  # noqa: E402
+orca = feed.orca
+check("Orca: Ordner liegt in der Sandbox", orca.DIR == os.path.join(HOME, ".local/opt/orca"), orca.DIR)
+
+
+def make_orca(root, version, pad=5 * 2**20):
+    """A folder like the extracted AppImage: app.asar with package.json after
+    pad bytes, the program and the starter script."""
+    os.makedirs(os.path.join(root, "resources/bin"), exist_ok=True)
+    pkg = json.dumps({"name": "orca", "version": version}).encode()
+    index = json.dumps({"files": {"big.bin": {"size": pad, "offset": "0"},
+                                  "package.json": {"size": len(pkg), "offset": str(pad)}}}).encode()
+    index += b" " * (-len(index) % 4)
+    with open(os.path.join(root, "resources/app.asar"), "wb") as f:
+        f.write(struct.pack("<4I", 4, len(index) + 8, len(index) + 4, len(index)) + index + b"\0" * pad + pkg)
+    for p in ("orca-ide", "resources/bin/orca-ide"):
+        with open(os.path.join(root, p), "w") as f:
+            f.write("#!/bin/sh\n")
+
+
+make_orca(orca.DIR, "1.4.242")
+check("Orca: Version aus app.asar, package.json hinter 4 MB", orca.version() == "1.4.242", orca.version())
+check("Orca: ohne Orca keine Version", orca.version(os.path.join(HOME, "nichts")) is None)
+YML = """version: 1.4.253
+files:
+  - url: orca-linux.AppImage
+    sha512: r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A==
+    size: 253147093
+path: orca-linux.AppImage
+sha512: r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A==
+releaseDate: '2026-11-07T10:34:19.667Z'
+"""
+check("Orca: latest-linux.yml gelesen", orca.release(YML) == ("1.4.253", "orca-linux.AppImage",
+      "r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A=="))
+try:
+    orca.release(YML.replace("path: orca-linux.AppImage", "path: ../../.bashrc"))
+    check("Orca: fremder Dateiname in latest-linux.yml abgelehnt", False)
+except ValueError:
+    check("Orca: fremder Dateiname in latest-linux.yml abgelehnt", True)
+check("Orca: Versionen als Zahlen verglichen", orca.newer("1.4.253", "1.4.242") and not orca.newer("1.4.99", "1.4.242"))
+PROC = os.path.join(HOME, "proc")
+os.makedirs(os.path.join(PROC, "77"))
+os.makedirs(os.path.join(PROC, "self"))
+os.symlink("/usr/bin/zsh", os.path.join(PROC, "77", "exe"))
+check("Orca: läuft nicht", not orca.running(orca.DIR, PROC))
+os.makedirs(os.path.join(PROC, "78"))
+os.symlink(os.path.join(orca.DIR, "orca-ide"), os.path.join(PROC, "78", "exe"))
+check("Orca: läuft (ein Prozess aus dem Ordner)", orca.running(orca.DIR, PROC))
+shutil.rmtree(os.path.join(PROC, "78"))
+
+installed = {"checkupdates"}
+feed.shutil.which = lambda program: "/usr/bin/" + program if program in installed else None
+feed.buddy.unsay = lambda key: None
+feed.fetch = fetch
+feed.run = lambda cmd, timeout=30: outputs.get(cmd[0], (1, ""))
+pages[orca.latest_url()] = YML
+fresh(checkupdates=(0, "linux 6.17.1-1 -> 6.17.2-1\n"))
+st = {}
+feed.check_updates(st, quiet=False)
+check("Updates: Orca im Eintrag, mit Version", [s["title"] for s in said] == ["Updates: Orca 1.4.253, 1 Paket"], said)
+del pages[orca.latest_url()]
+said.clear()
+st["updates_checked"] = 0
+feed.check_updates(st, quiet=False)
+check("Updates: GitHub offline: Orca bleibt im Eintrag", said == [] and st["orca_update"] == "1.4.253", (said, st))
+pages[orca.latest_url()] = YML.replace("1.4.253", "1.4.242")
+feed.check_updates(st, quiet=False)
+check("Updates: Orca aktuell: nur noch das Paket", [s["title"] for s in said] == ["Updates: 1 Paket"], said)
+feed.shutil.which = real_which
+
+# The install, against a local server with a stand-in AppImage (a script
+# that "extracts" a prepared folder).
+NEW = os.path.join(HOME, "neu")
+make_orca(NEW, "1.4.253")
+image = f"#!/bin/sh\n[ \"$1\" = --appimage-extract ] && cp -r '{NEW}' squashfs-root && chmod -R a+w squashfs-root\n".encode()
+served = {}
+class Releases(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = served.get(self.path)
+        self.send_response(200 if body is not None else 404)
+        self.send_header("Content-Length", str(len(body or b"")))
+        self.end_headers()
+        self.wfile.write(body or b"")
+    def log_message(self, *a):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Releases)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{server.server_port}/releases"
+yml = lambda sha: f"version: 1.4.253\npath: orca-linux.AppImage\nsha512: {sha}\n".encode()
+served["/releases/download/v1.4.253/orca-linux.AppImage"] = image
+served["/releases" + orca.latest_url("")] = yml(base64.b64encode(hashlib.sha512(b"anders").digest()).decode())
+import contextlib, io  # noqa: E402
+def install():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = orca.install(orca.DIR, base, PROC)
+    return code, out.getvalue()
+leftovers = lambda: [n for n in os.listdir(os.path.dirname(orca.DIR)) if n != "orca"]
+code, out = install()
+check("Installieren: falsche Prüfsumme: Orca bleibt", code == 1 and "Prüfsumme" in out and orca.version() == "1.4.242"
+      and leftovers() == [], (code, out, leftovers()))
+served["/releases" + orca.latest_url("")] = yml(base64.b64encode(hashlib.sha512(image).digest()).decode())
+os.makedirs(os.path.join(PROC, "78"))
+os.symlink(os.path.join(orca.DIR, "orca-ide"), os.path.join(PROC, "78", "exe"))
+code, out = install()
+check("Installieren: Orca läuft: nicht ersetzt, Hinweis", code == 1 and "Schließ Orca" in out and orca.version() == "1.4.242", out)
+shutil.rmtree(os.path.join(PROC, "78"))
+real_max, orca.MAX_IMAGE = orca.MAX_IMAGE, 10  # a download bigger than the cap stops
+code, out = install()
+orca.MAX_IMAGE = real_max
+check("Installieren: zu großer Download: Abbruch, Orca bleibt, nichts übrig",
+      code == 1 and "larger than" in out and orca.version() == "1.4.242" and leftovers() == [], (code, out, leftovers()))
+code, out = install()
+check("Installieren: neue Version am selben Ort, Starter da, nichts übrig",
+      code == 0 and orca.version() == "1.4.253" and os.path.isfile(os.path.join(orca.DIR, "resources/bin/orca-ide"))
+      and os.path.isfile(os.path.join(orca.DIR, "orca-ide")) and leftovers() == [], (code, out, leftovers()))
+writable = [os.path.join(d, n) for d, ds, fs in os.walk(orca.DIR) for n in ds + fs if os.stat(os.path.join(d, n)).st_mode & 0o022]
+check("Installieren: nichts für andere schreibbar (das AppImage entpackt 0777)", writable == [], writable)
+code, out = install()
+check("Installieren: schon aktuell: nichts zu tun", code == 0 and "schon aktuell" in out, out)
+del served["/releases" + orca.latest_url("")]
+code, out = install()
+check("Installieren: GitHub offline: Fehler, Orca bleibt", code == 1 and orca.version() == "1.4.253", out)
 server.shutdown()
 
 # A click on a crash (bin/omarchy-buddy-crash): only the user's own core

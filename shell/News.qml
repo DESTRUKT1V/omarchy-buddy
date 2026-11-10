@@ -15,7 +15,7 @@ Scope {
   property var items: []
   property string raw: ""
   property real lastToasted: -1
-  property var unfolded: ({})  // the days the user opened in the list (#183), until it closes
+  property var unfolded: ({})  // the days (#183) and cut-off texts (#248, "news|ID") the user opened, until it closes
   readonly property string historyMode: app.settings.values.history
 
   // The setting changed: lib/buddy.py moves the news to the place it wants

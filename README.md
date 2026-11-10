@@ -234,10 +234,19 @@ user. It cannot protect you from a process that already runs as you:
   commands go to the hook and to `omarchy-buddy-say` on stdin.
 - **What the island starts:** `xdg-open` for a news item's link (any address
   a program handed to `omarchy-buddy-say --url`), its own scripts
-  (`omarchy-buddy-update`, `omarchy-buddy-crash`, the hook), `hyprctl` to
+  (`omarchy-buddy-update`, `omarchy-buddy-crash`, `omarchy-buddy-analyze`, the hook), `hyprctl` to
   focus a window, and for a clicked notification the command its sender
   attached (`omarchy-exec-argv`, as Omarchy's own notifications do) or the
   sender's own action. Commands run without a shell.
+- **"Ask AI" hands a notification's text to an agent that does not ask.**
+  `omarchy-agent` starts the default agent without permission prompts (Claude
+  Code with `--permission-mode auto`, others with their own "don't ask"
+  flag). The text stays out of the arguments and is marked as quoted data,
+  but a program that sends a critical notification can still write text
+  meant to steer the agent. That is why the button only comes on critical
+  notifications without a button of their own, never on messages from people,
+  and only when you click it. Switch it off under settings → "Ask AI about
+  errors" if you do not want that.
 - Like every Omarchy plugin it runs unsandboxed inside `omarchy-shell`; only
   install it from a source you trust.
 
@@ -495,8 +504,9 @@ The gear in the big view opens the settings: size, how long pop-ups stay,
 reduce motion (O-Morchy only blinks, views fade instead of growing, the
 ticker stands still), language, what happens while you
 share the screen, what the history keeps, the agents (a switch for each
-one installed except Claude, which is always on), and rules per app
-(normal / history only / ignore). Everything lives in
+one installed except Claude, which is always on), rules per app
+(normal / history only / ignore) and "Ask AI about errors" (see
+Notifications). Everything lives in
 `~/.config/omarchy-buddy/config.json` and can be edited by hand; the island
 watches the file and applies changes at once:
 
@@ -508,12 +518,14 @@ watches the file and applies changes at once:
       "whenSharing": "hide",     // "nothing", "quiet", "hide" (island hidden)
       "history": "full",         // "full", "noText", "off"
       "apps": { "Spotify": "historyOnly", "Beeper": "ignore" },
+      "aiButton": true,          // "Ask AI" on critical notifications without a button of their own
       "updateCheck": false,      // live test after Omarchy updates (file only)
       "updateNews": true,        // look for updates every 12 hours
       "longCommands": false,     // report terminal commands of 1 min or more (see News)
       "limitWarn": 80,           // limit warning from … % (file only)
       "screen": "",              // fixed monitor, e.g. "DP-1" (file only)
       "agents": { "cursor-agent": false },  // switched off (only false is kept): no hooks, nothing in the island
+      "gitRepos": { "~/lightforge": false },  // git clones the update watcher leaves out (only false is kept)
       "feed": { "kuma": "", "github": true }  // Uptime Kuma status page (empty: off), GitHub via gh (see News)
     }
 
@@ -536,7 +548,8 @@ has sent something.
 
 **News** (`omarchy-buddy-feed`, every 15 min, "check now" in the island runs
 it at once): pending updates, full disks, failed services, crashes, new Claude Code
-and Omarchy versions, Orca releases (only with Orca installed) and a morning
+and Omarchy versions, Orca releases (only with Orca installed some other way
+than below) and a morning
 greeting with your first name (from the system). The very first run only
 records the current state.
 
@@ -556,12 +569,47 @@ Without a battery Omarchy never calls it.
 Updates are looked for every 12 hours (and on "check now") with whatever is
 installed, each check read-only and without root: Omarchy and pacman
 (`checkupdates`), the AUR (`yay`/`paru -Qua`), `mise`, `npm -g`, `pnpm -g`,
-Flatpak and rustup. One item names them all ("Updates: Omarchy,
+Flatpak and rustup (mise only counts tools that are installed, not Omarchy's
+lazy ones), and Orca when its official AppImage is extracted to
+`~/.local/opt/orca`. One item names them all ("Updates: Omarchy, Orca 1.4.253,
 12 packages, 3 mise tools, 2 npm"); it is replaced when that changes and goes
 away when everything is current. A source that fails or is offline keeps its
 last answer. "Update" opens a floating terminal (`omarchy-buddy-update`) that
 runs the updates one by one, on Omarchy `omarchy update` last (pacman, AUR;
-it may ask to restart), and checks again at the end. Off with "Updates" in the settings.
+it may ask to restart), and checks again at the end. Orca: the newest AppImage
+from GitHub, checked against the SHA512 in its `latest-linux.yml`, extracted
+(no FUSE needed) and swapped in for `~/.local/opt/orca` in one go, the old
+folder kept until that worked; `~/.local/bin/orca-ide` and the menu entry keep
+working. While Orca runs it is left alone ("quit Orca first"). Off with "Updates" in the settings.
+
+**Software installed with `git clone`** (the update watcher, #224): every hour
+the feed looks one folder deep in `~/.config/omarchy/plugins`, `~/.local/share`,
+`~/.local/opt`, `~/.oh-my-zsh` (with its custom plugins and themes) and your
+home folder for git clones of software someone else publishes, that is with an
+`origin` on a public `https://` host. Never watched: your own repos
+(`~/Projects`, `~/orca`, `~/NAS`, chezmoi's source, the buddy itself, remotes of
+your own GitHub account as `gh` knows it, ssh remotes such as your own Forgejo,
+local paths and hosts in your own network), Omarchy's own clone, symlinks and
+mount points (a NAS is never woken). A clone found for the first time comes
+with one item ("New in the update watcher: fzf-tab"); one you delete drops out;
+settings → Sources lists them under "Git software", each with its own switch
+(`"gitRepos": {"~/path": false}`) and, where there is something to say, a line:
+local changes or no branch (never updated), or a new version with a build step
+(update it yourself). A clone whose own `.git/config` sets more than `git clone`
+writes (a copied-in folder could bring an fsmonitor, a filter or a credential
+helper that would run at every check) is listed without a switch, "Not watched:
+own Git settings": only its config is read, nothing else runs in it, and it is
+never checked or updated (#228, #232). The check is `git ls-remote` for one ref (no download,
+at most 20 s and 64 KB, git never asks for a password: no terminal prompt, ssh
+in BatchMode). New versions join the update item ("Updates: …, 2 plugins,
+oh-my-zsh, 1 git repo"). In the update terminal, before `omarchy update`:
+Omarchy plugins through `omarchy plugin update ID` (it shows the diff and
+asks), oh-my-zsh through its own upgrade script (what `omz update` runs) and
+the others with fetch and `merge --ff-only`, each after its log and diff and a
+question. A clone with local changes, without a branch that follows its
+remote, or with commits of its own is left as it is; one with a build step
+(Makefile, Cargo.toml, package.json …, not for zsh plugins) is only reported,
+since a pull alone would not update what is installed.
 Your own sources (a server over SSH, a task board …) belong in a script of
 yours that calls `omarchy-buddy-say` from a systemd user timer.
 
@@ -580,6 +628,24 @@ row, that is said once. For your phone let Kuma do it: add an ntfy
 notification to the monitors that matter and set the retries so Kuma only
 calls it down after about 5 minutes (heartbeat interval 60 s, retries 4,
 retry interval 60 s).
+
+A status page behind a login server that hands out OAuth2 tokens (such as
+Authelia with an OIDC client for `client_credentials`) can be read too; this
+is only in `config.json`:
+
+    "feed": { "kuma": "https://uptime.example.org/status/home",
+              "kuma_auth": { "token_url": "https://auth.example.org/api/oidc/token",
+                             "client_id": "omarchy-buddy",
+                             "secret_file": "~/.config/omarchy-buddy/kuma-secret" } }
+
+`token_url` is the `token_endpoint` from the login server's
+`/.well-known/openid-configuration` (https only); `secret_file` holds the
+client secret alone (`chmod 600`). Each run asks for a token with scope
+`authelia.bearer.authz` and the status page's API prefix
+(`https://HOST/api/status-page/`) as resource,
+sends it as `Authorization: Bearer` (never on to a redirect) and, on a 401,
+asks once more. Token and secret stay in memory, nothing is written to the
+state or the log. The settings page's address check uses the same login.
 
 **GitHub** (only with the [GitHub CLI](https://cli.github.com) installed and
 signed in, `gh auth login`; otherwise nothing shows, the settings say how to
@@ -651,6 +717,20 @@ counts as read; "mark all read" in the peek (pointer over the pill) marks the
 rest without opening the island. Clicks in the first 300 ms after the view
 changes don't count (double-click guard). History (100 entries):
 `~/.local/state/omarchy-buddy/notifications.json`.
+
+**Ask AI** (on by default, settings → "Ask AI about errors"): a critical
+notification that brings no button of its own (no sender buttons, no reply
+field, no Omarchy command) gets "Ask AI", in the pop-up and in the history.
+It hands the notification to Omarchy's default agent (`omarchy-agent`) in a
+terminal, the way Omarchy's "Process crashed" does for crashes: the agent is
+told to find out what is behind it and to ask before it changes anything.
+Never for chats, mail, appointments, music or calls; no button while no
+default agent is set (`omarchy default agent NAME`). Sender, title and text
+go to `omarchy-buddy-analyze` on stdin, cleaned of control characters and
+cut (2000 characters of text), into a file only you can read in
+`$XDG_RUNTIME_DIR/omarchy-buddy/ai/` (the newest five stay); the agent's
+task only names that file and says to read it as data, never as
+instructions.
 
 **Calendar reminders** get a calendar mark on the app icon and in the pill,
 like chats and mail: GNOME Calendar and Evolution (their reminder service
@@ -734,9 +814,10 @@ goes live only with the next `--stable`.
 | `agent-plugins/` | plugins for opencode (`opencode.js`) and Pi / Oh My Pi (`pi.js`): their events → `omarchy-buddy-hook --agent NAME`; opencode's answers from the island → `ctx.permission.reply` |
 | `bin/omarchy-buddy-statusline` | in front of Claude's status line: limits and context → `usage.json`, then the old status line |
 | `bin/omarchy-buddy-say`, `bin/omarchy-buddy-feed` | news → `~/.local/state/omarchy-buddy/news.json` |
-| `lib/updates.py`, `bin/omarchy-buddy-update` | which updates wait (for the feed) and the terminal that installs them |
+| `lib/updates.py`, `lib/orca.py`, `lib/gitwatch.py`, `bin/omarchy-buddy-update` | which updates wait (for the feed) and the terminal that installs them |
 | `bin/omarchy-buddy-check`, `hooks/post-update` | check after Omarchy updates, fallback |
 | `bin/omarchy-buddy-crash`, `hooks/battery-low` | "Investigate" on a crash item; Omarchy's low-battery hook → news |
+| `bin/omarchy-buddy-analyze` | "Ask AI" on a critical notification: the notification (stdin) → a private file → `omarchy-agent` |
 | `lib/buddy.py`, `lib/texts.py` | paths; texts of the scripts (EN/DE) |
 
 Tests:

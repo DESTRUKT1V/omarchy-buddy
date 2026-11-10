@@ -19,10 +19,14 @@
 //   whenSharing   while the screen is shared: "nothing", "quiet" (Ruhemodus)
 //                 or "hide" (no island at all; "veil" before #107 means the same)
 //   history       what the notification history keeps on disk (NoteLogic.storedHistory)
+//   aiButton      "Mit KI ansehen" on critical notifications without a button
+//                 of their own (NoteLogic.wantsAi, #235)
 //   apps          per app: "normal", "historyOnly" (no pop-up unless critical)
 //                 or "ignore" (no pop-up, no history)
 //   updateCheck   omarchy-buddy-check tests the island after an Omarchy update
 //   updateNews    omarchy-buddy-feed looks for updates every 12 hours (lib/updates.py)
+//   gitRepos      per git clone the update watcher found ("~/path", lib/gitwatch.py):
+//                 false leaves it out (#224); only "false" is kept
 //   longCommands  a terminal command of a minute or more says when it is done
 //                 (lib/long-commands.sh; the switch runs omarchy-buddy-setup --commands)
 //   weather       "Omarchy-Wetter ersetzen" (#184): Omarchy's weather out of the
@@ -37,9 +41,9 @@
 //                 other keys in the file are kept as they are
 
 var defaults = { zoom: 0, popupTime: "normal", reduceMotion: false, language: "auto", font: "",
-                 whenSharing: "hide", history: "full", apps: {},
+                 whenSharing: "hide", history: "full", aiButton: true, apps: {},
                  updateCheck: false, updateNews: true, longCommands: false, weather: false, limitWarn: 80, screen: "",
-                 agents: {}, feed: { kuma: "", github: true } }
+                 agents: {}, gitRepos: {}, feed: { kuma: "", github: true } }
 
 // Settings that are gone: an old file may still hold them, they are dropped
 // without a word (tickerInPill until #174).
@@ -85,6 +89,7 @@ function normalize(raw) {
     font: typeof raw.font === "string" ? raw.font.trim() : "",
     whenSharing: raw.whenSharing === "veil" ? "hide" : oneOf(sharingModes, raw.whenSharing, defaults.whenSharing),
     history: NoteLogic.historyMode(raw.history),
+    aiButton: raw.aiButton !== false,
     apps: apps,
     updateCheck: raw.updateCheck === true,
     updateNews: raw.updateNews !== false,
@@ -93,6 +98,7 @@ function normalize(raw) {
     limitWarn: raw.limitWarn === undefined || raw.limitWarn === null || isNaN(warn) ? defaults.limitWarn : Math.max(0, Math.min(100, warn)),
     screen: typeof raw.screen === "string" ? raw.screen.trim() : "",
     agents: agentsOff(raw.agents),
+    gitRepos: agentsOff(raw.gitRepos),
     feed: feedSources(raw.feed)
   }
 }
@@ -105,7 +111,7 @@ function invalid(raw, settings) {
     if (!(k in raw)) continue
     var bad = k === "apps" ? !isObject(raw.apps) || Object.keys(raw.apps).some(function(a) { return appRules.indexOf(raw.apps[a]) === -1 })
       : k === "whenSharing" && raw[k] === "veil" ? false
-      : k === "agents" ? !isObject(raw.agents) || Object.keys(raw.agents).some(function(a) { return typeof raw.agents[a] !== "boolean" })
+      : k === "agents" || k === "gitRepos" ? !isObject(raw[k]) || Object.keys(raw[k]).some(function(a) { return typeof raw[k][a] !== "boolean" })
       : k === "feed" ? !isObject(raw.feed) || "kuma" in raw.feed && typeof raw.feed.kuma !== "string"
                        || "github" in raw.feed && typeof raw.feed.github !== "boolean"
       : JSON.stringify(settings[k]) !== JSON.stringify(raw[k])
@@ -181,7 +187,7 @@ function kumaNote(check, lang) {
   return { text: Strings.tl(lang, "settings.kuma." + key), error: key === "invalid" || key === "unreachable" }
 }
 
-// The agents switched off: { name: false }, nothing else (on is the default).
+// The agents (or git clones) switched off: { name: false }, nothing else (on is the default).
 function agentsOff(raw) {
   var out = {}
   if (isObject(raw)) for (var name in raw) if (name && raw[name] === false) out[name] = false
@@ -204,6 +210,29 @@ function agentRows(installed, settings) {
   var off = settings && settings.agents || {}
   return SessionLogic.foundAgents(installed).filter(function(a) { return a.id !== "claude" }).map(function(a) {
     return { id: a.id, name: a.name, on: off[a.id] !== false, untested: untestedAgents.indexOf(a.id) !== -1 }
+  })
+}
+
+function withGitRepo(settings, path, on) {
+  return edited(settings, function(s) { if (on) delete s.gitRepos[path]; else s.gitRepos[path] = false })
+}
+
+// The update watcher's clones (omarchy-buddy-feed --git-list, one "~/path"
+// per line, then a tab and its state if it has one) as the page lists them:
+// { path, name, on, state, watched }, in the feed's order. The name is the
+// folder without a leading dot ("oh-my-zsh"); state is "dirty", "detached" or
+// "build" (#225, "settings.git.STATE"), "" for nothing to say or switched off.
+// "config": a clone with its own git settings, never watched (#228), so no
+// switch (watched false) and always its line (#232).
+var gitStates = ["dirty", "detached", "build", "config"]
+
+function gitRows(listText, settings) {
+  var off = settings && settings.gitRepos || {}
+  return String(listText || "").split("\n").filter(function(l) { return l.trim() !== "" }).map(function(l) {
+    var p = l.split("\t")[0], parts = p.replace(/\/+$/, "").split("/")
+    var state = oneOf(gitStates, l.split("\t")[1], ""), watched = state !== "config", on = watched && off[p] !== false
+    return { path: p, name: parts[parts.length - 1].replace(/^\.+/, "") || p, on: on,
+             state: on || !watched ? state : "", watched: watched }
   })
 }
 

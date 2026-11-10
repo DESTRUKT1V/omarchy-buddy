@@ -29,6 +29,9 @@ test("Datei fehlt oder ist leer: alles Standard", () => {
   assert.equal(L.normalize({ weather: true }).weather, true)
   assert.equal(L.normalize({ weather: "ja" }).weather, false)
   assert.deepEqual(d.apps, {})
+  assert.equal(d.aiButton, true)  // #235: on unless switched off
+  assert.equal(L.normalize({ aiButton: false }).aiButton, false)
+  assert.equal(L.normalize({ aiButton: "nein" }).aiButton, true)
 })
 
 test("Kaputte Datei: nicht ok, nichts übernommen", () => {
@@ -226,6 +229,40 @@ test("Agents (#158): nur abgeschaltete stehen in config.json, Zeilen nur für in
   assert.deepEqual(rows.map(r => [r.id, r.name, r.on, r.untested]), [
     ["codex", "Codex", false, false], ["cursor-agent", "Cursor", true, true], ["pi-agent", "Pi", true, false]])
   assert.deepEqual(L.agentRows("", L.normalize({})), [])
+})
+
+test("Git-Klone (#224): nur abgewählte stehen in config.json, Zeilen aus --git-list", () => {
+  assert.deepEqual(L.normalize({}).gitRepos, {})
+  assert.deepEqual(L.normalize({ gitRepos: { "~/.oh-my-zsh": false, "~/x": true, "~/y": "aus" } }).gitRepos, { "~/.oh-my-zsh": false })
+  assert.deepEqual(L.parse('{"gitRepos": {"~/y": "aus"}}').invalid, ['gitRepos: {"~/y":"aus"}'])
+  assert.deepEqual(L.parse('{"gitRepos": []}').invalid, ["gitRepos: []"])
+  let s = L.withGitRepo(L.normalize({}), "~/lightforge", false)
+  assert.deepEqual(s.gitRepos, { "~/lightforge": false })
+  assert.match(L.serialize(s, {}), /"gitRepos": \{\n    "~\/lightforge": false\n  \}/)
+  assert.deepEqual(L.withGitRepo(s, "~/lightforge", true).gitRepos, {})
+  const rows = L.gitRows("~/.oh-my-zsh\n~/.config/omarchy/plugins/someone.dock\n~/lightforge\n\n", s)
+  assert.deepEqual(rows.map(r => [r.path, r.name, r.on]), [
+    ["~/.oh-my-zsh", "oh-my-zsh", true], ["~/.config/omarchy/plugins/someone.dock", "someone.dock", true],
+    ["~/lightforge", "lightforge", false]])
+  assert.deepEqual(L.gitRows("", s), [])
+})
+
+test("Git-Klone (#225): Status je Klon aus --git-list, nur bei eingeschalteten", () => {
+  const s = L.withGitRepo(L.normalize({}), "~/off", false)
+  const rows = L.gitRows("~/.oh-my-zsh\n~/a\tdirty\n~/b\tdetached\n~/c\tbuild\n~/d\tquatsch\n~/off\tdirty\n", s)
+  assert.deepEqual(rows.map(r => [r.path, r.name, r.on, r.state]), [
+    ["~/.oh-my-zsh", "oh-my-zsh", true, ""], ["~/a", "a", true, "dirty"], ["~/b", "b", true, "detached"],
+    ["~/c", "c", true, "build"], ["~/d", "d", true, ""], ["~/off", "off", false, ""]])
+  const Strings = require("./lib/load").load("Strings.js")
+  for (const k of ["dirty", "detached", "build", "config"]) for (const lang of ["de", "en"])
+    assert.ok(Strings.hasIn(lang, "settings.git." + k), lang + " " + k)
+})
+
+test("Git-Klone (#232): eigene Git-Einstellungen: nie beobachtet, ohne Schalter, Zeile immer", () => {
+  const s = L.withGitRepo(L.normalize({}), "~/off", false)
+  const rows = L.gitRows("~/a\tdirty\n~/eigen\tconfig\n~/off\tconfig\n", s)
+  assert.deepEqual(rows.map(r => [r.path, r.on, r.state, r.watched]), [
+    ["~/a", true, "dirty", true], ["~/eigen", false, "config", false], ["~/off", false, "config", false]])
 })
 
 test("Agents (#158): ungetestet sind die nie echt gelaufenen", () => {

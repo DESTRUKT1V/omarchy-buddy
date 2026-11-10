@@ -120,6 +120,12 @@ Scope {
     ghTest.running = true
   }
 
+  // The update watcher's git clones (#224): the feed lists them (no network),
+  // checked when the page opens; a switch writes gitRepos["~/path"] = false.
+  property string gitList: ""
+  function checkGit() { if (!gitListing.running) gitListing.running = true }
+  function setGitRepo(path, on) { values = SettingsLogic.withGitRepo(values, path, on); save() }
+
   function setAppRule(name, rule) { values = SettingsLogic.withAppRule(values, name, rule); save() }
 
   function save() {
@@ -193,6 +199,11 @@ Scope {
       onStreamFinished: if (!kumaTest.again && kumaTest.url === settings.values.feed.kuma)
         settings.kumaCheck = text.trim() === "ok" ? "ok" : "unreachable"
     }
+  }
+  Process {
+    id: gitListing
+    command: [settings.app.feeder, "--git-list"]
+    stdout: StdioCollector { onStreamFinished: settings.gitList = text }
   }
   // Only whether gh has a token (no network, nothing printed): signed out
   // or no gh, the page says how to sign in.

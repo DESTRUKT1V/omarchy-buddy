@@ -15,10 +15,11 @@ Column {
   readonly property var spotify: app.spotify
   readonly property var apps: SettingsLogic.pageApps(app.notifications.notes, values)
   readonly property var agents: SettingsLogic.agentRows(settings.agentsInstalled, values)
+  readonly property var gitRepos: SettingsLogic.gitRows(settings.gitList, values)
   property bool removing: false   // the question before uninstalling is open
   property bool sourcesOpen: false
   spacing: Theme.s(10)
-  onVisibleChanged: if (visible) { page.contentY = 0; removing = false; sourcesOpen = false; kumaField.text = values.feed.kuma; settings.checkSources(); settings.checkAgents(); settings.checkBar() }
+  onVisibleChanged: if (visible) { page.contentY = 0; removing = false; sourcesOpen = false; kumaField.text = values.feed.kuma; settings.checkSources(); settings.checkAgents(); settings.checkBar(); settings.checkGit() }
 
   Item {
     width: parent.width
@@ -160,6 +161,25 @@ Column {
             onPicked: function(v) { view.settings.setAppRule(appRow.modelData, v) }
           }
         }
+      }
+      // "Mit KI ansehen" (#235): only with a default agent (Sessions.defaultAgent).
+      SettingRow {
+        label: Theme.t("settings.aiButton")
+        Toggle {
+          name: Theme.t("settings.aiButton")
+          checked: view.values.aiButton
+          onToggled: function(on) { view.settings.set("aiButton", on) }
+        }
+      }
+      Hint {
+        text: view.app.sessions.defaultAgent ? Theme.t("settings.aiButtonHint", view.app.sessions.defaultAgent) : Theme.t("settings.aiButtonNoAgent")
+      }
+      Link {
+        visible: !view.app.sessions.defaultAgent && view.app.sessions.menuPresent
+        x: Theme.s(4)
+        topPadding: Theme.s(4)
+        text: Theme.t("settings.aiButtonPick")
+        onActivated: { view.app.sessions.pickDefaultAgent(); view.app.opened = false }
       }
 
       // One switch per installed agent (#158); Claude is always on.
@@ -326,6 +346,42 @@ Column {
         Hint {
           visible: view.values.feed.github && !view.settings.ghSignedIn
           text: Theme.t("settings.githubSignIn")
+        }
+        // The git clones the update watcher found (#224), one switch each, under
+        // their own heading; a line where there is something to say (#225).
+        // Clones with their own git settings are never watched: no switch (#232).
+        SectionTitle {
+          visible: view.values.updateNews && view.gitRepos.length > 0
+          text: Theme.t("settings.gitSoftware")
+          topPadding: Theme.s(12)
+        }
+        Repeater {
+          model: view.values.updateNews ? view.gitRepos : []
+          Column {
+            id: gitRow
+            required property var modelData
+            width: parent.width
+            SettingRow {
+              label: gitRow.modelData.name
+              hint: gitRow.modelData.path
+              Toggle {
+                visible: gitRow.modelData.watched
+                width: visible ? Theme.s(38) : 0  // the label keeps the room (childrenRect counts hidden items)
+                name: gitRow.modelData.name + ", " + gitRow.modelData.path
+                checked: gitRow.modelData.on
+                onToggled: function(on) { view.settings.setGitRepo(gitRow.modelData.path, on) }
+              }
+            }
+            Hint {
+              visible: gitRow.modelData.state !== ""
+              text: gitRow.modelData.state ? Theme.t("settings.git." + gitRow.modelData.state) : ""
+            }
+          }
+        }
+        Hint {
+          visible: view.values.updateNews && view.gitRepos.length > 0
+          topPadding: Theme.s(4)
+          text: Theme.t("settings.gitReposHint")
         }
         // Spotify's "+" in the player (#121, Spotify.qml): the user's own
         // Spotify app, signed in once in the browser. Only once a Spotify

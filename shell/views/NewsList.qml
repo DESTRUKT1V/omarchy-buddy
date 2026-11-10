@@ -129,21 +129,28 @@ Column {
               id: item
               required property var modelData
               readonly property bool unread: IslandLogic.newsUnread(modelData, view.app.prefs.lastRead, view.app.prefs.readIds)
-              readonly property bool clickable: IslandLogic.clickable(modelData)
+              readonly property string newsId: IslandLogic.newsId(modelData)
+              readonly property bool open: !!view.app.news.unfolded["news|" + newsId]
+              // "open", "unfold", "fold" or "" (#248: a cut-off text without a link unfolds).
+              readonly property string click: IslandLogic.newsClick(modelData, titleLabel.truncated || bodyLabel.truncated, open, Theme.lang)
               width: newsList.width
               height: itemContent.implicitHeight + Theme.s(16)
               radius: Theme.radius
               // Flat (#193, B7): unread shows in the title's weight, the pointer as a surface.
-              color: itemMouse.containsMouse && clickable ? Util.alpha(Theme.fg, 0.06) : "transparent"
+              color: itemMouse.containsMouse && click !== "" ? Util.alpha(Theme.fg, 0.06) : "transparent"
 
               Click {
                 id: itemMouse
                 anchors.fill: parent
-                enabled: item.clickable
+                enabled: item.click !== ""
                 ringRadius: item.radius
                 name: IslandLogic.newsName(item.modelData, item.unread, Theme.lang)
-                key: "news|" + IslandLogic.newsId(item.modelData)
-                onActivated: { view.app.activate(item.modelData); view.app.opened = false }
+                  + (item.click === "unfold" || item.click === "fold" ? ", " + Theme.t("a11y." + item.click) : "")
+                key: "news|" + item.newsId
+                onActivated: {
+                  if (item.click !== "open") { view.unfold("news|" + item.newsId); return }
+                  view.app.activate(item.modelData); view.app.opened = false
+                }
               }
               Row {
                 id: itemContent
@@ -207,17 +214,20 @@ Column {
                     }
                   }
                   Label {
+                    id: titleLabel
                     width: parent.width
                     text: item.modelData.title || ""
                     font.weight: item.unread ? Font.DemiBold : Font.Normal
+                    wrapMode: item.open ? Text.WrapAtWordBoundaryOrAnywhere : Text.NoWrap
                     elide: Text.ElideRight
                   }
                   Label {
+                    id: bodyLabel
                     visible: text !== ""
                     width: parent.width
                     text: item.modelData.body || ""
                     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    maximumLineCount: 2
+                    maximumLineCount: item.open ? 999 : 2
                     elide: Text.ElideRight
                     color: Theme.muted
                     font.pixelSize: Theme.fCaption

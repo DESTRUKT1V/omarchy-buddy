@@ -1,0 +1,239 @@
+{
+  "amp": {
+    "name": "amp",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.0.1794052841-g6d76b7",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "basecamp": {
+    "name": "basecamp",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.24.1",
+    "release_url": "https://github.com/basecamp/basecamp-cli/releases/tag/v0.24.1",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "ghui": {
+    "name": "ghui",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.9.1",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "grok": {
+    "name": "grok",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.0.77",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "hey-cli": {
+    "name": "hey-cli",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.11.0",
+    "release_url": "https://github.com/basecamp/hey-cli/releases/tag/v1.11.0",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "http:devin": {
+    "name": "http:devin",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "3000.12.17",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "http:kiro-cli": {
+    "name": "http:kiro-cli",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "3.1.0",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "hunk": {
+    "name": "hunk",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.24.1",
+    "release_url": "https://github.com/modem-dev/hunk/releases/tag/v0.24.1",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "muse": {
+    "name": "muse",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.4.14-R7309.1",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:@deepseek-ai/dsh": {
+    "name": "npm:@deepseek-ai/dsh",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.2.2-rc.1",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:@kilocode/cli": {
+    "name": "npm:@kilocode/cli",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "7.8.27",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:@minimax-ai/code": {
+    "name": "npm:@minimax-ai/code",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.7.6",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:@moonshot-ai/kimi-code": {
+    "name": "npm:@moonshot-ai/kimi-code",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "2.5.2",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:cf": {
+    "name": "npm:cf",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.0.0-beta.28",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:command-code": {
+    "name": "npm:command-code",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.88.5",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "npm:freebuff": {
+    "name": "npm:freebuff",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.2.36",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "oh-my-pi": {
+    "name": "oh-my-pi",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "18.18.0",
+    "release_url": "https://github.com/can1357/oh-my-pi/releases/tag/v18.18.0",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "ori": {
+    "name": "ori",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.16.3-f483c10",
+    "release_url": "https://github.com/OpenRouterLabs/ori-releases/releases/tag/cli-0.16.3-f483c10",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "playwright": {
+    "name": "playwright",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "1.65.0",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "qwen": {
+    "name": "qwen",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.26.9",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  },
+  "uv": {
+    "name": "uv",
+    "requested": "latest",
+    "current": null,
+    "bump": null,
+    "latest": "0.13.7",
+    "release_url": "https://github.com/astral-sh/uv/releases/tag/0.13.7",
+    "source": {
+      "type": "mise.toml",
+      "path": "/etc/mise/conf.d/omarchy-tools.toml"
+    }
+  }
+}

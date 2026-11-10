@@ -7,6 +7,9 @@
 #
 #   omarchy-buddy-update          open the terminal
 #   omarchy-buddy-update --run    the updates, in this terminal
+#   omarchy-buddy-update --orca   only Orca's AppImage (lib/orca.py), one of the steps
+#   omarchy-buddy-update --git    only the git clones with a new version (lib/gitwatch.py,
+#                                 each after its diff and a question), one of the steps
 
 import json
 import os
@@ -18,6 +21,8 @@ import sys
 BIN = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(BIN), "lib"))
 import buddy  # noqa: E402
+import gitwatch  # noqa: E402
+import orca  # noqa: E402
 import updates  # noqa: E402
 from texts import t  # noqa: E402
 
@@ -37,23 +42,30 @@ def terminal():
     return 0
 
 
-def run(wait):
+def feed_state():
     try:
         with open(os.path.join(buddy.STATE_DIR, "feed.json")) as f:
             st = json.load(f)
+        return st if isinstance(st, dict) else {}
     except (OSError, ValueError):
-        st = {}
+        return {}
+
+
+def run(wait):
+    st = feed_state()
     buddy.private_dir(buddy.STATE_DIR)
     with buddy.private_open(os.path.join(buddy.STATE_DIR, "updates-ran")):
         pass  # the feed checks again on its next run, even after a restart
-    todo = updates.steps(st.get("update_counts", {}), st.get("omarchy_ready", False), shutil.which)
+    todo = updates.steps(st.get("update_counts", {}), st.get("omarchy_ready", False), shutil.which,
+                         st.get("orca_update", ""), st.get("git_updates", {}))
     if not todo:
         print(t("updates.none"))
     failed = []
     for cmd in todo:
         print("\n\033[1m" + t("updates.step", command=shlex.join(cmd)) + "\033[0m", flush=True)
         try:
-            code = subprocess.call(cmd)
+            own = cmd in (updates.ORCA_STEP, updates.GIT_STEP)
+            code = subprocess.call([os.path.join(BIN, cmd[0]), *cmd[1:]] if own else cmd)
         except OSError:
             code = -1
         except KeyboardInterrupt:
@@ -72,5 +84,27 @@ def run(wait):
     return 1 if failed else 0
 
 
+def orca_only():
+    try:
+        return orca.install()
+    except KeyboardInterrupt:
+        return 130
+
+
+def git_only():
+    """The clones the feed found with a new version, one after the other;
+    a failed one does not stop the rest."""
+    failed = 0
+    watched, off = gitwatch.find(), gitwatch.switched_off()  # the rules again, whatever feed.json says
+    try:
+        for path, kind in sorted(feed_state().get("git_updates", {}).items()):
+            if watched.get(path) == kind and path not in off:
+                failed |= gitwatch.update(path, kind) != 0
+    except KeyboardInterrupt:
+        return 130
+    return 1 if failed else 0
+
+
 if __name__ == "__main__":
-    sys.exit(run("--wait" in sys.argv) if "--run" in sys.argv else terminal())
+    sys.exit(orca_only() if "--orca" in sys.argv else git_only() if "--git" in sys.argv
+             else run("--wait" in sys.argv) if "--run" in sys.argv else terminal())
