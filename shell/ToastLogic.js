@@ -9,7 +9,14 @@
 // stays. Pure functions (no Quickshell, no QML), so tests/*.test.js can
 // load this file in Node; Toasts.qml and News.qml hold the state.
 
-var maxLoose = 3  // pop-ups waiting beyond this many fold into one summary
+// Every list of pop-ups (waiting, held back) stays finite however long the
+// user is away or the view stays open: at most maxLoose single ones plus one
+// summary, at most maxSticky critical ones (the oldest beyond fold into one
+// critical summary), a summary keeps maxNames names and the total as a
+// number, and a pop-up's text is cut at NoteLogic.maxText.
+var maxLoose = 3   // pop-ups waiting beyond this many fold into one summary
+var maxSticky = 10
+var maxNames = 4   // three are shown, the fourth says there are more (" …")
 
 function countOf(items) {
   var n = 0
@@ -23,9 +30,13 @@ function summaryToast(items, title, time) {
   var problem = items.some(function(t) { return isProblem(t.level) })
   // A summary folded into a new one passes on its names and its count.
   var names = []
-  for (var j = 0; j < items.length; j++) names = names.concat(items[j].names || [items[j].title])
+  for (var j = 0; j < items.length && names.length < maxNames; j++) names = names.concat(items[j].names || [items[j].title])
+  names = names.slice(0, maxNames)
+  // testOnly: everything it folds is a test's (#256), so the test IPC knows its own summary;
+  // a flag, not the list of senders, so a summary stays small however much it folds (#254).
+  var testOnly = items.length > 0 && items.every(function(t) { return ProbeLogic.isTest(t) })
   return { time: time, source: "buddy", level: problem ? "warn" : "info", title: title,
-           names: names, count: countOf(items), emote: strongest(items.map(emoteFor)),
+           names: names, testOnly: testOnly, count: countOf(items), emote: strongest(items.map(emoteFor)),
            body: names.slice(0, 3).join(", ") + (names.length > 3 ? " …" : "") }
 }
 
@@ -64,14 +75,32 @@ function newAsk(keys, greeted) {
   return keys.some(function(k) { return greeted.indexOf(k) === -1 })
 }
 
-// Flood guard: critical pop-ups ("sticky") go first and never fold into a
-// summary; everything else waiting beyond three pop-ups becomes one
+// Flood guard: critical pop-ups ("sticky") go first and stay single up to
+// maxSticky; beyond that the oldest become one critical "N kritische
+// Meldungen", which stays until clicked away and survives a restart like
+// them. Everything else waiting beyond three pop-ups becomes one
 // "N Neuigkeiten".
 function fold(queue, items, time, lang) {
   queue = queue.concat(items)
+  var sticky = queue.filter(function(t) { return t.sticky })
   var loose = queue.filter(function(t) { return !t.sticky })
+  if (sticky.length > maxSticky) {
+    var old = sticky.slice(0, sticky.length - maxSticky + 1)
+    var crit = summaryToast(old, Strings.tl(lang, "toast.critical", countOf(old)), time)
+    crit.sticky = true
+    crit.key = "buddy-critical:" + time + ":" + countOf(old)  // stickyOnes and restoreSticky go by key
+    if (old.some(function(t) { return t.level === "error" })) crit.level = "error"
+    sticky = [crit].concat(sticky.slice(old.length))
+  }
   if (loose.length > maxLoose) loose = [summaryToast(loose, Strings.tl(lang, "toast.many", countOf(loose)), time)]
-  return queue.filter(function(t) { return t.sticky }).concat(loose)
+  return sticky.concat(loose)
+}
+
+// Admission while held back (user away, fullscreen, open view): the same
+// bounds as fold, and fleeting ones go right away (bundle would drop them
+// on the return anyway).
+function hold(held, items, time, lang) {
+  return fold(held.filter(function(t) { return !fleeting(t) }), items.filter(function(t) { return !fleeting(t) }), time, lang)
 }
 
 // Only worth something in the moment: volume and brightness, Omarchy's
@@ -82,13 +111,13 @@ function fleeting(toast) {
 }
 
 // Pop-ups held back: fleeting ones go, critical ones stay as they are, the
-// rest as one summary when there is more than one. prefix goes before
-// "N Neuigkeiten".
+// rest as one summary when there is more than one (or the one is a summary
+// already, folded by hold). prefix goes before "N Neuigkeiten".
 function bundle(held, time, prefix, lang) {
   held = held.filter(function(t) { return !fleeting(t) })
   var sticky = held.filter(function(t) { return t.sticky })
   var loose = held.filter(function(t) { return !t.sticky })
-  if (loose.length > 1) loose = [summaryToast(loose, (prefix || "") + Strings.tl(lang, "toast.many", countOf(loose)), time)]
+  if (loose.length > 1 || (loose.length === 1 && loose[0].names)) loose = [summaryToast(loose, (prefix || "") + Strings.tl(lang, "toast.many", countOf(loose)), time)]
   return sticky.concat(loose)
 }
 
@@ -177,7 +206,8 @@ function storedSticky(list, mode) {
   list = list.filter(function(t) { return !ProbeLogic.isTest(t) && !t.onboarding })
   if (mode === "off") return []
   if (mode !== "noText") return list
-  return list.map(NoteLogic.textless)
+  // A critical summary's names are titles, often the message text itself.
+  return list.map(function(t) { var c = NoteLogic.textless(t); if (c.names) c.names = []; return c })
 }
 
 // The file after a shell start. The sender's live object died with the
@@ -249,18 +279,20 @@ function newest(list) {
 function freshNews(list, lastToasted, watched) {
   var fresh = []
   for (var i = list.length - 1; i >= 0; i--)
-    if (Number(list[i].time || 0) > lastToasted && !list[i].quiet && !watched(list[i])) fresh.push(list[i])
+    if (Number(list[i].time || 0) > lastToasted && !list[i].quiet && !watched(list[i])) fresh.push(NoteLogic.clipped(list[i]))
   return fresh
 }
 
 // "jetzt prüfen": while omarchy-buddy-feed runs it says so, afterwards for a
 // few seconds what it found (items newer than the click), then it is the
-// link again. check: { running, done, found }
+// link again. check: { running, done, failed, found }; failed: the feed did
+// not get through (Helper.qml: did not start, ran too long, an error).
 var checkShowMs = 4000
 
 function checkLabel(check, lang) {
   if (check.running) return Strings.tl(lang, "check.running")
   if (!check.done) return Strings.tl(lang, "check.idle")
+  if (check.failed) return Strings.tl(lang, "check.failed")
   return check.found === 0 ? Strings.tl(lang, "check.none") : check.found === 1 ? Strings.tl(lang, "check.one") : Strings.tl(lang, "check.many", check.found)
 }
 

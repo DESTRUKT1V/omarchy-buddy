@@ -6,12 +6,11 @@
 #
 #   SOURCES       name → (program, command, exit codes that mean "worked")
 #   count(name, code, out)   how many updates the output names, None: failed
-#   summary(counts, omarchy, orca, git)      the parts of the one news item, in order
-#   steps(counts, omarchy, have, orca, git)  the commands that update, in order
+#   summary(counts, omarchy, git)      the parts of the one news item, in order
+#   steps(counts, omarchy, have, git)  the commands that update, in order
 #
-# orca: the newer Orca version when Orca's AppImage is installed under
-# ~/.local/opt/orca (lib/orca.py), else "". git: the git clones with a new
-# version, {"~/path": kind} (lib/gitwatch.py).
+# git: the git clones with a new version, {"~/path": kind} (lib/gitwatch.py).
+# Orca is no step: a new Orca is only a news item with a link (#258).
 #
 # Pure functions apart from the table, so tests/feed-test.py feeds them
 # recorded output.
@@ -32,7 +31,6 @@ SOURCES = {
 }
 OMARCHY_PACKAGES = ("omarchy", "omarchy-dev")
 # Summary parts in this order; pacman and the AUR count together.
-ORCA_STEP = ["omarchy-buddy-update", "--orca"]
 GIT_STEP = ["omarchy-buddy-update", "--git"]
 GIT_GROUPS = [("plugins", ("plugin",)), ("omz", ("omz",)), ("git", ("zsh", "git"))]
 GROUPS = [("packages", ("pacman", "yay", "paru")), ("flatpak", ("flatpak",)), ("mise", ("mise",)),
@@ -82,12 +80,10 @@ def omarchy_ready(code, out):
     return code == 0 and any(n in OMARCHY_PACKAGES for n in arrow_lines(out))
 
 
-def summary(counts, omarchy, orca="", git=None):
-    """[("omarchy", 1), ("orca", "1.4.253"), ("packages", 12), ("mise", 3), …,
+def summary(counts, omarchy, git=None):
+    """[("omarchy", 1), ("packages", 12), ("mise", 3), …,
     ("plugins", 2), ("omz", 1)]: what the news item names, only what has updates."""
     parts = [("omarchy", 1)] if omarchy else []
-    if orca:
-        parts.append(("orca", orca))
     for group, names in GROUPS:
         n = sum(counts.get(s) or 0 for s in names)
         if n:
@@ -99,7 +95,7 @@ def summary(counts, omarchy, orca="", git=None):
     return parts
 
 
-def steps(counts, omarchy, have, orca="", git=None):
+def steps(counts, omarchy, have, git=None):
     """The commands that install the updates, in order. have(program) says
     whether it is installed. On Omarchy `omarchy-update` comes last
     (#122): it covers pacman and the AUR (with its snapshot and migrations)
@@ -123,8 +119,6 @@ def steps(counts, omarchy, have, orca="", git=None):
         out.append(["pnpm", "update", "-g"])
     if todo("rustup"):
         out.append(["rustup", "update"])
-    if orca:
-        out.append(ORCA_STEP)
     if git:
         out.append(GIT_STEP)
     if on_omarchy and (omarchy or todo("pacman") or todo("yay") or todo("paru")):

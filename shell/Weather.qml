@@ -42,7 +42,7 @@ Scope {
   }
 
   function refresh() {
-    if (!on || testing || locator.running || fetcher.running) return
+    if (!on || testing || locator.active || fetcher.active) return
     if (!spot) {
       start(locator, WeatherLogic.curlCommand("offline"), WeatherLogic.locateUrl(place))
       return
@@ -52,11 +52,11 @@ Scope {
   }
 
   // The addresses go on curl's stdin, not into its arguments (WeatherLogic.curl).
-  function start(process, command, urls) {
-    process.command = command
-    process.input = WeatherLogic.curlInput(urls)
-    process.stdinEnabled = true
-    process.running = true
+  // A search while one runs: once more afterwards, with the newest words.
+  function start(helper, argv, urls) {
+    helper.argv = argv
+    helper.payload = WeatherLogic.curlInput(urls)
+    helper.request()
   }
 
   // Severe weather into the news and as a pop-up, once per warning (#189,
@@ -116,47 +116,44 @@ Scope {
     onTriggered: if (weather.failed || Date.now() / 1000 - weather.fetched > 300) weather.refresh()
   }
 
-  Process {
+  // Finite helpers (Helper.qml, #255): curl gives up after 10 s per address
+  // and 2 MB per answer (WeatherLogic.curl), the helper a little later. One
+  // that did not get through counts as offline: the timer tries again, the
+  // search with the next words.
+  Helper {
     id: locator
-    property string input: ""
-    onStarted: { write(input); stdinEnabled = false }
-    stdout: StdioCollector {
-      onStreamFinished: {
-        if (weather.testing) return
-        if (text.trim() === "offline") { weather.failed = true; return }
-        weather.spot = WeatherLogic.located(weather.place, text)
-        weather.placeFailed = !weather.spot
-        if (weather.spot) weather.refresh()
-      }
+    seconds: 20
+    limit: 2 << 20
+    onDone: (result, output) => {
+      if (weather.testing) return
+      if (result !== "ok" || output.trim() === "offline") { weather.failed = true; return }
+      weather.spot = WeatherLogic.located(weather.place, output)
+      weather.placeFailed = !weather.spot
+      if (weather.spot) weather.refresh()
     }
   }
-  Process {
+  Helper {
     id: fetcher
     property var list: []
-    property string input: ""
-    onStarted: { write(input); stdinEnabled = false }
-    stdout: StdioCollector {
-      onStreamFinished: {
-        if (!weather.spot || weather.testing) return
-        var now = Date.now() / 1000
-        var d = WeatherLogic.combine(WeatherLogic.split(text, fetcher.list), weather.spot, now)
-        weather.fetched = now
-        weather.failed = !d
-        if (d) { weather.report = d; weather.tell() }
-      }
+    seconds: 60             // up to four addresses (WeatherLogic.sources)
+    limit: (8 << 20) + 64   // their answers and separators
+    onDone: (result, output) => {
+      if (!weather.spot || weather.testing) return
+      var now = Date.now() / 1000
+      var d = result === "ok" ? WeatherLogic.combine(WeatherLogic.split(output, fetcher.list), weather.spot, now) : null
+      weather.fetched = now
+      weather.failed = !d
+      if (d) { weather.report = d; weather.tell() }
     }
   }
-  Process {
+  Helper {
     id: searcher
-    property string input: ""
-    onStarted: { write(input); stdinEnabled = false }
-    onExited: (code) => { if (code !== 0) weather.searchState = "failed" }
-    stdout: StdioCollector {
-      onStreamFinished: {
-        if (weather.searchState !== "searching") return
-        weather.found = WeatherLogic.places(text)
-        weather.searchState = weather.found.length ? "found" : text.trim() === "" ? "failed" : "empty"
-      }
+    seconds: 20
+    limit: 2 << 20
+    onDone: (result, output) => {
+      if (weather.searchState !== "searching") return
+      weather.found = result === "ok" ? WeatherLogic.places(output) : []
+      weather.searchState = weather.found.length ? "found" : result !== "ok" || output.trim() === "" ? "failed" : "empty"
     }
   }
 }

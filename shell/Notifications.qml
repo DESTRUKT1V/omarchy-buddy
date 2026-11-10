@@ -366,7 +366,9 @@ Scope {
 
   // What Omarchy's notifications plugin answered, so its key bindings, the
   // menu's silencing toggle and omarchy-notification-wait/-dismiss keep working.
+  readonly property var omarchyIpc: omarchyHandler  // Probe.testOmarchy
   IpcHandler {
+    id: omarchyHandler
     target: "notifications"
     enabled: store.serving
 

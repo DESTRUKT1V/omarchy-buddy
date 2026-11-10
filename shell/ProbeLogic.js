@@ -5,13 +5,87 @@
 // plain JSON, and which notifications belong to a test. Pure functions (no
 // Quickshell, no QML), so tests/*.test.js can load this file in Node.
 //
-// Tests send their notifications under the app name testApp. Everything the
-// test IPC changes (actions, replies, forgetting) only ever touches those.
+// Tests send their notifications under the app name testApp, their
+// omarchy-buddy-say items and fake sessions under keys starting with testKey.
+// Everything the test IPC changes only ever touches those (allows, below),
+// and a test run stops when something real gets in the way (interruption).
 
 var testApp = "Buddy-Test"
+var testKey = "buddy-test-"  // lib/buddy.py TEST_KEY
 var noteLimit = 15  // newest history records in a snapshot
 
-function isTest(item) { return !!item && item.app === testApp }
+// A test's key; "done-<session>-…" is the hook's pop-up for a finished test session (lib/hook.py report_done).
+function isTestKey(key) { return new RegExp("^(done-)?" + testKey).test(String(key || "")) }
+
+// A test's notification, pop-up or news item; a summary pop-up only when
+// everything it folds is (ToastLogic.summaryToast's `testOnly`).
+function isTest(item) {
+  if (!item) return false
+  if (item.app === testApp || isTestKey(item.key)) return true
+  return item.testOnly === true
+}
+
+function isSession(o) { return !!o && typeof o.id === "string" && Array.isArray(o.requests) }
+function isRecord(o) { return !!o && typeof o.key === "string" && o.key !== "" && o.time !== undefined }
+
+// Whose thing a clickable (or text field) acts on, from its parents upward,
+// nearest first. Probe.qml reads each level as {marker (probeOwner), ask,
+// session, note, model (modelData)}. The answer: {kind: "session", id},
+// {kind: "note", id, item}, {kind: "history" | "view" | "player"} (marked
+// parts) or {kind: "none"}.
+function owner(levels) {
+  for (var i = 0; i < levels.length; i++) {
+    var l = levels[i]
+    if (l.marker) return { kind: String(l.marker) }
+    var s = l.ask && l.ask.session && l.ask.session.id ? l.ask.session : l.session && l.session.id ? l.session : isSession(l.model) ? l.model : null
+    if (s) return { kind: "session", id: String(s.id) }
+    var n = isRecord(l.note) ? l.note : isRecord(l.model) ? l.model : null
+    if (n) return { kind: "note", id: n.key, item: n }
+  }
+  return { kind: "none" }
+}
+
+// May the test act on owner o? want: what the test means (a session id, a
+// record key, or "history", "view", "player"). c: {notes, removed, canUndo
+// (the history's link undoes), testPlayer}. Unknown owners never.
+function allows(o, want, c) {
+  if (o.kind === "session") return o.id === want && isTestKey(o.id)
+  if (o.kind === "note") return o.id === want && isTest(o.item)  // its whole bundle goes with it (×)
+    && c.notes.every(function(n) { return n.group !== o.item.group || isTest(n) })
+  if (o.kind === "history") return want === "history" && (c.canUndo ? c.removed : c.notes).every(isTest)
+  if (o.kind === "player") return want === "player" && c.testPlayer === true
+  return o.kind === "view" && want === "view"
+}
+
+// What Omarchy's "notifications" IPC method would act on (Notifications.qml),
+// null for a method the test may not call.
+function omarchyTargets(method, s) {
+  var shown = s.mode === "toast" && s.toast ? [s.toast] : []
+  if (["dismissOne", "invokeLast", "act", "invokeAction", "keyboard"].indexOf(method) !== -1) return shown
+  if (method === "dismissAll" || method === "dismiss") return (s.toast ? [s.toast] : []).concat(s.queue)
+  if (method === "showHistory") return []
+  return null
+}
+
+// The real records (history, news) there are, by key (or time, a news item may have none) → true.
+function recordId(r) { return String(r.key || r.time) }
+function realKeys(records) {
+  var keys = {}
+  for (var i = 0; i < records.length; i++) if (!isTest(records[i])) keys[recordId(records[i])] = true
+  return keys
+}
+
+// Why a test run has to stop, "" while nothing real is in the way: a real
+// request waits, a real pop-up shows or waits, a real record came in since
+// the start (`known`, also a silent one: Ruhemodus, sharing), the user opened
+// the view or the settings page (not the test), or is away (pop-ups wait for them).
+function interruption(s) {
+  if (s.asks.some(function(a) { return !isTestKey(a && a.session && a.session.id) })) return "ask"
+  if ((s.toast ? [s.toast] : []).concat(s.queue, s.heldBack).some(function(t) { return !isTest(t) })) return "popup"
+  if (s.known && s.records.some(function(r) { return !isTest(r) && !s.known[recordId(r)] })) return "popup"
+  if ((s.opened && !s.viewByTest) || (s.settingsShown && !s.settingsByTest)) return "view"
+  return s.paused ? "away" : ""
+}
 
 function toastBrief(t) {
   if (!t) return null
@@ -46,7 +120,7 @@ function snapshot(s, live) {
            silent: s.silent, veiled: s.veiled === true, settingsShown: s.settingsShown === true,
            settings: s.settings || null, settingsBroken: s.settingsBroken === true, settingsInvalid: s.settingsInvalid || [], away: s.away, fullscreen: s.fullscreen, paused: s.paused,
            toast: toastBrief(s.toast), queue: s.queue.map(toastBrief), heldBack: s.heldBack.length,
-           notes: notes, noteCount: s.notes.length, ask: askBrief(s.ask), asks: s.asks.length,
+           notes: notes, noteCount: s.notes.length, realNotes: s.notes.filter(function(n) { return !isTest(n) }).length, ask: askBrief(s.ask), asks: s.asks.length,
            sessions: s.sessions.length, player: s.player || null, spotify: s.spotify || null,
            news: (s.news || []).slice(0, noteLimit).map(function(i) { return String(i.title || "") }) }
 }

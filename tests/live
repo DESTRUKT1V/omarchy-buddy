@@ -22,9 +22,14 @@
 #                           leaves out "alle löschen" in the history
 #
 # Test notifications come from the app "Buddy-Test" and are taken out of
-# the history again at the end; the Ruhemodus is put back as it was. Exit
-# code 0: all good, 1: something failed, 2: the island does not answer,
-# 3: it failed only while something real was on the island (disturbed();
+# the history again at the end; the Ruhemodus is put back as it was. Every
+# action goes through the test IPC (Probe.qml), which acts only on the test's
+# own notification, session or request the call names, also in the open
+# view; the run (testBegin) stops as soon as a real request or pop-up
+# arrives, you open the view or leave: then only the test's own things are
+# cleaned up. Exit code 0: all good, 1: something failed, 2: the island does
+# not answer, 3: something real came in the way (stopped, or failed only
+# while something real was on the island, disturbed();
 # bin/omarchy-buddy-check then tries again later).
 
 import argparse
@@ -69,6 +74,15 @@ def check(name, ok, detail=""):
     return ok
 
 
+class Interrupted(Exception):
+    """The run stopped (Probe.qml): something real came in the way."""
+
+
+# Probe.qml's reasons (ProbeLogic.interruption).
+WHY = {"ask": "eine echte Rückfrage", "popup": "ein echtes Pop-up",
+       "view": "du hast die Insel geöffnet", "away": "du warst weg oder Vollbild"}
+
+
 def disturbed():
     """What real, not the test's, is on the island right now: a failure then
     may come from outside (another agent's request, a real pop-up)."""
@@ -90,6 +104,30 @@ def ipc(target, method, *args):
         return out.stdout.strip() if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def probe(method, *args):
+    """A test action through the test IPC; Interrupted once the run has stopped."""
+    r = ipc("omarchy-buddy.test", method, *args)
+    if r and r.startswith("interrupted:"):
+        raise Interrupted(r.split(":", 1)[1])
+    return r
+
+
+def omarchy(method, arg=""):
+    """Omarchy's notifications IPC method (act, dismissAll …), only while all
+    it would act on is the test's (Probe.testOmarchy, "foreign" otherwise)."""
+    return probe("testOmarchy", method, arg)
+
+
+def view(on):
+    """Opens or closes the open view as the test's own. Closing never raises
+    (it runs in cleanups) and leaves a view you opened alone."""
+    if on:
+        probe("testOpen", "true")
+    else:
+        ipc("omarchy-buddy.test", "testOpen", "false")
+    wait_for(lambda s: s["opened"] == on, 2)
 
 
 def state():
@@ -198,7 +236,7 @@ def got_signal(name, nid, value, timeout=3.0):
 
 
 def clear_screen():
-    ipc("notifications", "dismissAll")
+    probe("testClear")
     wait_for(lambda s: not s["toast"] and not s["queue"], 2)
 
 
@@ -252,13 +290,15 @@ def layout(need=()):
     return last
 
 
-def click(*names, wait=3.0):
-    """Clicks the first of these names the island has (German, English),
-    waiting for one to be there and usable (a new view can take a moment)."""
+def click(owner, *names, wait=3.0):
+    """Clicks the first of these names the island has (German, English) that
+    acts on owner (a test session's id, a test record's key, "history",
+    "view" or "player"), waiting for one to be there and usable (a new view
+    can take a moment)."""
     end = time.monotonic() + wait
     while True:
         for name in names:
-            if ipc("omarchy-buddy.test", "testClick", name) == "ok":
+            if probe("testClick", name, owner) == "ok":
                 pump(0.3)
                 return True
         if time.monotonic() >= end:
@@ -266,10 +306,10 @@ def click(*names, wait=3.0):
         pump(0.2)
 
 
-def type_text(text):
-    """Types into the open text field, waiting for it to appear."""
+def type_text(text, owner):
+    """Types into owner's open text field, waiting for it to appear."""
     end = time.monotonic() + 3
-    while (r := ipc("omarchy-buddy.test", "testType", text)) != "ok" and time.monotonic() < end:
+    while (r := probe("testType", text, owner)) != "ok" and time.monotonic() < end:
         pump(0.2)
     pump(0.3)
     return r == "ok"
@@ -341,7 +381,7 @@ def check_popups(run):
     s, ok = wait_for(lambda s: toast_title(s) == t)
     check("normal: Pop-up", ok, f"Pop-up: {toast_title(s)!r}")
     check("normal: im Verlauf", find_note(s, t) is not None)
-    r = ipc("notifications", "dismissOne")
+    r = omarchy("dismissOne")
     s, ok = wait_for(lambda s: toast_title(s) != t, 2)
     check("IPC dismissOne", r == "ok" and ok, f"Antwort {r!r}, Pop-up {toast_title(s)!r}")
 
@@ -352,7 +392,7 @@ def check_popups(run):
         n = find_note(s, t) or {}
         check(f"Nachricht von Menschen: {kind}-Zeichen im Pop-up und Verlauf (#123)",
               ok and s["toast"].get("kind") == kind and n.get("kind") == kind, f"Pop-up: {s.get('toast')}, Eintrag: {n}")
-        ipc("notifications", "dismissOne")
+        omarchy("dismissOne")
         wait_for(lambda s: toast_title(s) != t, 2)
 
     t = f"Niedrig {run}"
@@ -366,7 +406,7 @@ def check_popups(run):
     notify(t, "bleibt stehen", urgency=2)
     s, ok = wait_for(lambda s: toast_title(s) == t and s["toast"]["sticky"])
     check("kritisch: Pop-up bleibt stehen", ok, f"Pop-up: {s.get('toast')}")
-    r = ipc("notifications", "dismissAll")
+    r = omarchy("dismissAll")
     s, ok = wait_for(lambda s: not s["toast"], 2)
     check("IPC dismissAll", r == "ok" and ok, f"Antwort {r!r}")
 
@@ -390,7 +430,7 @@ def check_actions(run):
     s, _ = wait_for(lambda s: find_note(s, t) is not None)
     n = find_note(s, t) or {}
     check("Aktion: Knopf kommt an", n.get("actions") == ["open"] and n.get("live"), f"Eintrag: {n}")
-    r = ipc("omarchy-buddy.test", "testAction", n.get("key", ""), "open")
+    r = probe("testAction", n.get("key", ""), "open")
     check("Aktion: App erfährt den Klick (ActionInvoked)", r == "ok" and got_signal("ActionInvoked", nid, "open"),
           f"Antwort {r!r}")
 
@@ -400,7 +440,7 @@ def check_actions(run):
     s, _ = wait_for(lambda s: (find_note(s, t) or {}).get("reply"))
     n = find_note(s, t) or {}
     check("Antwort: Feld wird angeboten", n.get("reply") is True, f"Eintrag: {n}")
-    r = ipc("omarchy-buddy.test", "testReply", n.get("key", ""), "Hallo von O-Morchy")
+    r = probe("testReply", n.get("key", ""), "Hallo von O-Morchy")
     check("Antwort: App bekommt den Text (NotificationReplied)",
           r == "ok" and got_signal("NotificationReplied", nid, "Hallo von O-Morchy"), f"Antwort {r!r}")
 
@@ -408,14 +448,14 @@ def check_actions(run):
     t = f"Standard {run}"
     nid = notify(t, "Klick öffnet", actions=["default", "Öffnen"])
     wait_for(lambda s: toast_title(s) == t)
-    r = ipc("notifications", "invokeLast")
+    r = omarchy("invokeLast")
     check("IPC invokeLast löst die Standardaktion aus", r == "ok" and got_signal("ActionInvoked", nid, "default"),
           f"Antwort {r!r}")
 
     t = f"Erstlauf-Hinweis {run}"
     notify(t, "", urgency=2)
     wait_for(lambda s: toast_title(s) == t)
-    r = ipc("notifications", "dismiss", "Erstlauf-Hinweis")
+    r = omarchy("dismiss", "Erstlauf-Hinweis")
     s, ok = wait_for(lambda s: toast_title(s) != t, 2)
     check("IPC dismiss nach Titel (omarchy-notification-dismiss)", r == "ok" and ok, f"Antwort {r!r}")
     clear_screen()
@@ -434,7 +474,7 @@ def check_omarchy_45(run):
     check("4.5: Knöpfe aus omarchy-actions im Datensatz", n.get("commands") == [c["label"] for c in commands], f"Eintrag: {n}")
     if ok:
         check_reach("4.5: Knöpfe aus omarchy-actions im Pop-up", layout([commands[1]["label"]]), [c["label"] for c in commands])
-    r = ipc("notifications", "invokeAction", 2)
+    r = omarchy("invokeAction", 2)
     wait_for(lambda s: os.path.exists(marks[1]), 3)
     check("4.5: IPC invokeAction 2 startet den zweiten Befehl", r == "ok" and os.path.exists(marks[1])
           and not os.path.exists(marks[0]), f"Antwort {r!r}")
@@ -445,25 +485,25 @@ def check_omarchy_45(run):
     t = f"Act ohne Knopf {run}"
     notify(t, "")
     wait_for(lambda s: toast_title(s) == t)
-    r = ipc("notifications", "act")
+    r = omarchy("act")
     s, ok = wait_for(lambda s: toast_title(s) != t, 2)
     check("4.5: IPC act ohne Knopf legt weg", r == "ok" and ok, f"Antwort {r!r}")
     t = f"Act ein Knopf {run}"
     nid = notify(t, "", actions=["ok", "OK"])
     wait_for(lambda s: toast_title(s) == t)
-    r = ipc("notifications", "act")
+    r = omarchy("act")
     check("4.5: IPC act drückt den einen Knopf", r == "ok" and got_signal("ActionInvoked", nid, "ok"), f"Antwort {r!r}")
     t = f"Act Klick {run}"
     nid = notify(t, "", actions=["default", "Öffnen"])
     wait_for(lambda s: toast_title(s) == t)
     check("4.5: IPC count", ipc("notifications", "count") == "1")
-    r = ipc("notifications", "act")
+    r = omarchy("act")
     check("4.5: IPC act klickt", r == "ok" and got_signal("ActionInvoked", nid, "default"), f"Antwort {r!r}")
 
     t = f"Act zwei Knöpfe {run}"
     notify(t, "", actions=["a", f"Erster {run}", "b", "Zweiter"])
     wait_for(lambda s: toast_title(s) == t)
-    r = ipc("notifications", "act")
+    r = omarchy("act")
     try:
         s, ok = wait_for(lambda s: s["opened"], 2)
         end = time.monotonic() + 2
@@ -472,12 +512,11 @@ def check_omarchy_45(run):
         focus = ipc("omarchy-buddy.test", "focused")
         check("4.5: IPC act mit zwei Knöpfen = keyboard: große Ansicht, erster Knopf hat den Fokus",
               r == "on" and ok and focus == f"Erster {run}", f"Antwort {r!r}, Fokus {focus!r}")
-        r = ipc("notifications", "keyboard")
+        r = omarchy("keyboard")
         s, ok = wait_for(lambda s: not s["opened"], 2)
         check("4.5: IPC keyboard ein zweites Mal schließt", r == "off" and ok, f"Antwort {r!r}")
     finally:
-        ipc("omarchy-buddy", "close")
-        wait_for(lambda s: not s["opened"], 2)
+        view(False)
     clear_screen()
 
 
@@ -511,7 +550,7 @@ def check_feelings(run):
         say(keys[2], "terminal", "error", f"Befehl fehlgeschlagen {run}")
         s, ok = wait_for(lambda s: toast_title(s) == f"Dienst aus {run}" and s["emote"] == "outage")
         check("Emotion: Kuma-Ausfall (#177)", ok, f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
-        ipc("notifications", "dismissOne")
+        omarchy("dismissOne")
         s, ok = wait_for(lambda s: toast_title(s) == f"Befehl fehlgeschlagen {run}", 2)
         check("Emotion: der Ausfall gewinnt gegen „fehlgeschlagen“ (#177)", ok and s["emote"] == "outage",
               f"Pop-up {toast_title(s)!r}, Emotion {s.get('emote')!r}")
@@ -538,11 +577,10 @@ def check_omarchy_ipc():
           f"{before} → {flipped} → {back}")
     r = ipc("notifications", "setDnd", "on" if before == "on" else "off")
     check("IPC setDnd", r == before, f"Antwort {r!r}")
-    r = ipc("notifications", "showHistory")
+    r = omarchy("showHistory")
     s, ok = wait_for(lambda s: s["opened"], 2)
     check("IPC showHistory öffnet die große Ansicht", r == "ok" and ok)
-    ipc("omarchy-buddy", "close")
-    wait_for(lambda s: not s["opened"], 2)
+    view(False)
     try:
         code = subprocess.run(["omarchy-notification-wait", "5"], timeout=10,
                               env=dict(os.environ, OMARCHY_PATH=OMARCHY)).returncode
@@ -615,19 +653,19 @@ def check_question(run, en=False):
         first = next((i for i in lay["items"] if i["name"] == questions[0]["options"][0]["label"]), {})
         check("Eigene Antwort: Auswahlzeile wie die Möglichkeiten", own.get("reach") and own.get("x") == first.get("x")
               and own.get("w") == first.get("w"), f"Eigene {own}, Möglichkeit {first}")
-        click("Eigene Antwort", "Own answer")
+        click(sid, "Eigene Antwort", "Own answer")
         need = ["Schicken", "Abbrechen"]
         check_reach("Eigene Antwort: Feld mit Schicken/Abbrechen erreichbar", layout(need), need)
-        type_text(f"Eigene Antwort {run}")
-        click(questions[1]["options"][0]["label"])
-        click(questions[1]["options"][3]["label"])
-        click(questions[2]["options"][2]["label"])
-        click(questions[3]["options"][1]["label"])
+        type_text(f"Eigene Antwort {run}", sid)
+        click(sid, questions[1]["options"][0]["label"])
+        click(sid, questions[1]["options"][3]["label"])
+        click(sid, questions[2]["options"][2]["label"])
+        click(sid, questions[3]["options"][1]["label"])
         lay = layout()
         btn = next((i for i in lay["items"] if i["name"] == answer), {})
         check("lange Frage: „Antworten“ geht, wenn alles beantwortet ist", btn.get("enabled") is True and btn.get("reach"),
               f"Knopf {btn}")
-        click(answer)
+        click(sid, answer)
         result = hook_answer(waiting)
         want = {questions[0]["question"]: f"Eigene Antwort {run}",
                 questions[1]["question"]: questions[1]["options"][0]["label"] + ", " + questions[1]["options"][3]["label"],
@@ -657,17 +695,17 @@ def check_plan(run, en=False):
             return
         approve, revise = ("Approve", "Revise …") if en else ("Freigeben", "Überarbeiten …")
         check_reach("langer Plan: Knöpfe erreichbar" + tag, layout([approve, revise]), [approve, revise])
-        unfolded = click("ganzer Plan", "whole plan")
+        unfolded = click(sid, "ganzer Plan", "whole plan")
         lay = layout()
         check("langer Plan: aufgeklappt scrollt er" + tag, unfolded and any(f["interactive"] for f in lay["flicks"]),
               f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
         check_reach("langer Plan: aufgeklappt Knöpfe erreichbar" + tag, lay, [approve, revise])
-        click(revise)
+        click(sid, revise)
         send, cancel = ("Send", "Cancel") if en else ("Schicken", "Abbrechen")
         check_reach("Überarbeiten: Feld mit Schicken/Abbrechen erreichbar" + tag, layout([send, cancel]), [send, cancel])
         if en:
             return
-        type_text(f"Bitte kürzer {run}")
+        type_text(f"Bitte kürzer {run}", sid)
         result = hook_answer(waiting) or {}
         check("Überarbeiten: Claude bekommt den Text", result.get("behavior") == "deny" and result.get("message") == f"Bitte kürzer {run}",
               f"bekommen {result}")
@@ -686,12 +724,12 @@ def check_cut_command(run):
         s, ok = wait_for(lambda s: s["ask"]["session"] == sid, 6)
         if not check("gekürzter Befehl: Hook meldet die Kürzung", ok and s["ask"]["truncated"], f"Rückfrage {s.get('ask')}"):
             return
-        unfolded = click("ganzer Befehl", "whole command")
+        unfolded = click(sid, "ganzer Befehl", "whole command")
         lay = layout()
         check("gekürzter Befehl: aufgeklappt scrollt er", unfolded and any(f["interactive"] for f in lay["flicks"]),
               f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
         check_reach("gekürzter Befehl: Knöpfe erreichbar", lay, ["Erlauben", "Ablehnen"])
-        click("Ablehnen")
+        click(sid, "Ablehnen")
         result = hook_answer(waiting) or {}
         check("gekürzter Befehl: Ablehnen kommt bei Claude an", result.get("behavior") == "deny", f"bekommen {result}")
     finally:
@@ -714,7 +752,7 @@ def check_codex(run):
         lay = layout(["Erlauben"])
         check("Codex-Rückfrage: Erlauben und Ablehnen, kein Immer erlauben",
               "Ablehnen" in names(lay) and "Immer erlauben" not in names(lay), f"Knöpfe {names(lay)}")
-        click("Erlauben")
+        click(sid, "Erlauben")
         result = hook_answer(waiting)
         check("Codex-Rückfrage: Codex bekommt nur behavior allow", result == {"behavior": "allow"}, f"bekommen {result}")
     finally:
@@ -734,12 +772,12 @@ def check_diff(run):
         s, ok = wait_for(lambda s: s["ask"]["session"] == sid, 6)
         if not check("Diff: Datei-Änderung kommt an", ok, f"Rückfrage {s.get('ask')}"):
             return
-        unfolded = click("ganze Änderung", "whole change")
+        unfolded = click(sid, "ganze Änderung", "whole change")
         lay = layout()
         check("Diff: aufgeklappt scrollt er", unfolded and any(f["interactive"] for f in lay["flicks"]),
               f"aufgeklappt {unfolded}, Flächen {lay['flicks']}")
         check_reach("Diff: Knöpfe erreichbar", lay, ["Erlauben", "Ablehnen"])
-        click("Ablehnen")
+        click(sid, "Ablehnen")
         result = hook_answer(waiting) or {}
         check("Diff: Ablehnen kommt bei Claude an", result.get("behavior") == "deny", f"bekommen {result}")
     finally:
@@ -759,13 +797,13 @@ def check_queue(run):
         need = ["Vorherige Anfrage", "Nächste Anfrage", "Erlauben"]
         check_reach("Warteschlange: Blättern und Knöpfe erreichbar", layout(need), need)
         first = (state() or {}).get("ask", {}).get("session")
-        click("Nächste Anfrage")
+        click("view", "Nächste Anfrage")
         s, ok = wait_for(lambda s: s["ask"]["session"] != first, 2)
         check("Warteschlange: Nächste Anfrage blättert weiter", ok)
         answered = 0
         for _ in sids:
             current = (state() or {}).get("ask") or {}
-            if not current.get("session", "").startswith(f"buddy-test-{run}-w") or not click("Erlauben"):
+            if not current.get("session", "").startswith(f"buddy-test-{run}-w") or not click(current["session"], "Erlauben"):
                 break
             answered += 1
             wait_for(lambda s: not s["ask"] or s["ask"]["request"] != current["request"], 3)
@@ -789,7 +827,7 @@ def check_long_asks(run):
     check_diff(run)
     check_queue(run)
     # English at the largest zoom (only in memory, config.json stays).
-    ipc("omarchy-buddy.test", "testSettings", json.dumps({"language": "en", "zoom": 1.6}))
+    probe("testSettings", json.dumps({"language": "en", "zoom": 1.6}))
     try:
         check_question(run, en=True)
         check_plan(run, en=True)
@@ -825,7 +863,7 @@ def check_in_view(run):
         check("Rückfrage im Blick: Insel zeigt sie beantwortbar", ok and s["mode"] == "needs", f"Ansicht {s.get('mode')!r}, Rückfrage {s.get('ask')}")
         pump(2.5)
         check("Rückfrage im Blick: Hook wartet weiter", waiting.poll() is None)
-        click(f"Ja, weiter {run}")
+        click(sid, f"Ja, weiter {run}")
         got = ((hook_answer(waiting) or {}).get("updatedInput") or {}).get("answers")
         check("Rückfrage im Blick: Antwort aus der Insel kommt an", got == {question["question"]: f"Ja, weiter {run}"}, f"bekommen {got}")
     finally:
@@ -865,9 +903,8 @@ def check_for_you(run):
     notify(mail, "Deine Rechnung ist da.", urgency=0, hints={"category": "email.arrived"})
     notify(plain, "Zustellung heute", urgency=0)
     wait_for(lambda s: find_note(s, mail) and find_note(s, plain))
-    ipc("omarchy-buddy", "open")
     try:
-        wait_for(lambda s: s["opened"], 2)
+        view(True)
         lay = layout([mail, plain])
         hides = ys(lay, "Ausblenden") or ys(lay, "Hide")
         check("Für dich: Mail einmal, über den Agents (#175)",
@@ -876,8 +913,7 @@ def check_for_you(run):
               len(ys(lay, plain)) == 1 and bool(hides) and ys(lay, plain)[0] > max(hides), f"Meldung {ys(lay, plain)}, Agents {hides}")
         check_reach("Für dich: alles erreichbar", lay)
     finally:
-        ipc("omarchy-buddy", "close")
-        wait_for(lambda s: not s["opened"], 2)
+        view(False)
     # #178: a mail and a critical one seen as pop-ups, the view opened and
     # closed: still in the block, until their × deletes them.
     pop, crit = f"Rechnung als Pop-up {run}", f"Akku fast leer {run}"
@@ -888,23 +924,19 @@ def check_for_you(run):
     clear_screen()
     try:
         for turn in ("nach dem Pop-up", "nach Schließen und Öffnen"):
-            ipc("omarchy-buddy", "open")
-            wait_for(lambda s: s["opened"], 2)
+            view(True)
             lay = layout([pop, crit])
             hides = ys(lay, "Ausblenden") or ys(lay, "Hide")
             check(f"Für dich bleibt {turn} (#178)",
                   bool(hides) and all(len(ys(lay, n)) == 1 and ys(lay, n)[0] < min(hides) for n in (pop, crit)),
                   f"Mail {ys(lay, pop)}, Kritisch {ys(lay, crit)}, Agents {hides}")
-            ipc("omarchy-buddy", "close")
-            wait_for(lambda s: not s["opened"], 2)
-        ipc("omarchy-buddy", "open")
-        wait_for(lambda s: s["opened"], 2)
-        click(f"Aus dem Verlauf löschen: {pop}", f"Remove from history: {pop}")
+            view(False)
+        view(True)
+        click((find_note(state() or {}, pop) or {}).get("key", ""), f"Aus dem Verlauf löschen: {pop}", f"Remove from history: {pop}")
         s, ok = wait_for(lambda s: not find_note(s, pop))
         check("Für dich: × löscht es aus dem Verlauf (#178)", ok and not ys(layout(), pop), "Mail noch da")
     finally:
-        ipc("omarchy-buddy", "close")
-        wait_for(lambda s: not s["opened"], 2)
+        view(False)
         for sid in sids:
             end_session(sid)
         clear_screen()
@@ -931,13 +963,13 @@ def check_history(run, clear_all):
     t = f"Lange Meldung {run}"
     body = f"Anfang {run}: " + " ".join([LONG] * 6)
     notify(t, body, urgency=0)
-    wait_for(lambda s: find_note(s, t) is not None)
-    ipc("omarchy-buddy", "open")
+    s, _ = wait_for(lambda s: find_note(s, t) is not None)
+    key = (find_note(s, t) or {}).get("key", "")
     try:
-        wait_for(lambda s: s["opened"], 2)
+        view(True)
         before = next((i for i in layout([f"Anfang {run}"])["items"] if i["name"].startswith(f"Anfang {run}")), None)
         check("Verlauf: lange Meldung gekürzt", bool(before) and before["truncated"], f"Eintrag {before}")
-        click(f"Anfang {run}")
+        click(key, f"Anfang {run}")
         lay = layout([f"Anfang {run}"])
         after = next((i for i in lay["items"] if i["name"].startswith(f"Anfang {run}")), None)
         check("Verlauf: lange Meldung klappt auf", bool(before) and bool(after) and not after["truncated"] and after["h"] > before["h"],
@@ -946,27 +978,30 @@ def check_history(run, clear_all):
         if not clear_all:
             report("Verlauf: alle löschen und Rückgängig", "übersprungen", "nicht mit --warten")
             return
-        n = (state() or {}).get("noteCount", 0)
-        keys = [x["key"] for x in (state() or {}).get("notes", [])]
-        if not click("alle löschen", "clear all"):
+        s = state() or {}
+        if s.get("realNotes"):
+            # The test IPC never empties a history with the user's own records in it.
+            report("Verlauf: alle löschen und Rückgängig", "übersprungen", f"{s['realNotes']} echte Meldungen im Verlauf")
+            return
+        n = s.get("noteCount", 0)
+        keys = [x["key"] for x in s.get("notes", [])]
+        if not click("history", "alle löschen", "clear all"):
             report("Verlauf: alle löschen", "fehler", "Link fehlt")
             return
         s, ok = wait_for(lambda s: s["noteCount"] == 0)
         lay = layout()
         check("Verlauf: alle löschen leert ihn (Leerzustand)", ok and "alle löschen" not in names(lay), f"{s.get('noteCount')} übrig")
         check_reach("Leerzustand: Rückgängig erreichbar", lay, ["Rückgängig"])
-        click("Rückgängig", "Undo")
+        click("history", "Rückgängig", "Undo")
         s, ok = wait_for(lambda s: s["noteCount"] == n and [x["key"] for x in s["notes"]] == keys)
         check("Verlauf: Rückgängig holt alle Meldungen zurück", ok, f"{s.get('noteCount')} statt {n}")
     finally:
-        ipc("omarchy-buddy", "close")
-        wait_for(lambda s: not s["opened"], 2)
+        view(False)
 
 
 def check_settings_page():
     """The settings page with invalid values, a broken file, in English at
     the largest zoom; only in memory, config.json stays as it is."""
-    probe = lambda *a: ipc("omarchy-buddy.test", *a)  # noqa: E731
     real = state() or {}
     probe("testSettingsPage", "true")
     try:
@@ -983,9 +1018,9 @@ def check_settings_page():
         wait_for(lambda s: s["settings"]["language"] == "en", 2)
         check_reach("Einstellungen auf Englisch, Zoom 1,6: alles erreichbar", layout())
     finally:
-        probe("testSettings", "")
-        probe("testSettingsPage", "false")
-        ipc("omarchy-buddy", "close")
+        ipc("omarchy-buddy.test", "testSettings", "")
+        ipc("omarchy-buddy.test", "testSettingsPage", "false")
+        view(False)
     s = state() or {}
     check("Einstellungen: danach wieder die echten",
           [s.get(k) for k in ("settings", "settingsBroken", "settingsInvalid")]
@@ -1018,22 +1053,22 @@ def check_player():
     fake = subprocess.Popen([os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake-player"), "--no-prev"],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
-        ipc("omarchy-buddy", "open")
+        view(True)
         mine = lambda s: (s.get("player") or {}).get("identity") == "Buddy-Test"  # noqa: E731
         s, ok = wait_for(lambda s: mine(s) and s["player"]["shown"] and s["player"]["playing"], 5)
         check("Player: Fenster neben der großen Ansicht", ok, f"player {s.get('player')}")
-        check("Player: Pause", click("Pausieren", "Pause"))
+        check("Player: Pause", click("player", "Pausieren", "Pause"))
         if other_playing():
             report("Player: pausiert bleibt das Fenster", "übersprungen", "ein anderer Player spielt, der gewinnt")
         else:
             s, ok = wait_for(lambda s: mine(s) and not s["player"]["playing"] and s["player"]["shown"])
             check("Player: pausiert bleibt das Fenster", ok, f"player {s.get('player')}")
-        check("Player: was der Player nicht kann, ist ausgegraut", not click("Vorheriger Titel", "Previous track"))
-        ipc("omarchy-buddy", "close")
+        check("Player: was der Player nicht kann, ist ausgegraut", not click("player", "Vorheriger Titel", "Previous track"))
+        view(False)
         s, ok = wait_for(lambda s: not s["opened"] and not (s.get("player") or {}).get("shown"))
         check("Player: schließt mit der großen Ansicht", ok, f"player {s.get('player')}")
     finally:
-        ipc("omarchy-buddy", "close")
+        view(False)
         fake.terminate()
         calls = fake.communicate(timeout=5)[0].split()
     check("Player: der Klick erreicht den Player", calls in (["PlayPause"], ["Pause"]), f"Aufrufe {calls}")
@@ -1052,31 +1087,33 @@ def check_spotify_key():
     fd, log = tempfile.mkstemp(prefix="buddy-test-hyprctl-")
     os.close(fd)
     names = ("In deinen Lieblingssongs speichern oder entfernen", "Save to or remove from your Liked Songs")
-    ipc("omarchy-buddy.test", "testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log]}))
-    fake = subprocess.Popen([os.path.join(here, "fake-player"), "--spotify-app"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fake = None
     try:
-        ipc("omarchy-buddy", "open")
+        probe("testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log]}))
+        fake = subprocess.Popen([os.path.join(here, "fake-player"), "--spotify-app"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        view(True)
         mine = lambda s: (s.get("player") or {}).get("identity") == "Buddy-Test"  # noqa: E731
         s, ok = wait_for(lambda s: mine(s) and s["spotify"]["like"] == "toggle", 5)
         check("Spotify ohne Verbindung: + bei Spotifys App", ok, f"spotify {s.get('spotify')}")
-        check("Spotify ohne Verbindung: Klick aufs Herz", click(*names))
+        check("Spotify ohne Verbindung: Klick aufs Herz", click("player", *names))
         s, ok = wait_for(lambda s: s["spotify"]["like"] == "sent")
         check("Spotify ohne Verbindung: kurze Rückmeldung", ok, f"spotify {s.get('spotify')}")
         with open(log) as f:
             sent = f.read().splitlines()
         check("Spotify ohne Verbindung: Kürzel an die Adresse des Fensters",
               sent == ['hl.dsp.send_shortcut({ mods = "ALT SHIFT", key = "B", window = "address:0x162" })'], f"{sent}")
-        ipc("omarchy-buddy.test", "testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log, "--fail"]}))
+        probe("testSpotify", json.dumps({"connected": False, "hyprctl": [hyprctl, log, "--fail"]}))
         wait_for(lambda s: s["spotify"]["like"] == "toggle")
-        click(*names)
+        click("player", *names)
         s, ok = wait_for(lambda s: s["spotify"]["like"] == "")
         check("Spotify ohne Verbindung: Fehler blendet das Herz aus", ok, f"spotify {s.get('spotify')}")
     finally:
         ipc("omarchy-buddy.test", "testSpotify", "")
-        ipc("omarchy-buddy", "close")
-        fake.terminate()
-        fake.wait(timeout=5)
+        ipc("omarchy-buddy.test", "testOpen", "false")
+        if fake:
+            fake.terminate()
+            fake.wait(timeout=5)
         os.unlink(log)
 
 
@@ -1180,17 +1217,20 @@ def check_log(log, start_size):
         check("kein neuer QML-Fehler während des Tests", not new, f"{len(new)} neue")
 
 
-def wait_until_ready(patient):
-    """The user is at the PC, nothing fullscreen, the island at rest. Patient:
-    wait up to two hours for that (after an update the user may be away)."""
-    limit = 7200 if patient else 15
-    end = time.monotonic() + limit
+def begin(patient):
+    """Waits until you are at the PC, nothing is fullscreen or shared and the
+    island is at rest, then starts the run (Probe.testBegin). Patient: up to
+    two hours (after an update you may be away). "" or why not."""
+    end = time.monotonic() + (7200 if patient else 15)
     while True:
         s = state() or {}
-        calm = not s.get("paused") and not s.get("sharing") and not s.get("opened") and not s.get("ask") \
-            and s.get("mode") in ("pill", "peek")
-        if calm or time.monotonic() >= end:
-            return s
+        why = "der Bildschirm wird gerade geteilt" if s.get("sharing") else \
+            "die Insel ist nicht in Ruhe" if s.get("mode") not in ("pill", "peek") else ""
+        if not why:
+            r = ipc("omarchy-buddy.test", "testBegin")
+            why = "" if r == "ok" else WHY.get(r, f"Test-IPC antwortet {r!r}")
+        if not why or time.monotonic() >= end:
+            return why
         time.sleep(5 if patient else 1)
 
 
@@ -1209,18 +1249,16 @@ def main():
     start_size = os.path.getsize(log) if log else 0
     run = time.strftime("%H%M%S")
 
-    s = wait_until_ready(args.warten)
-    # Away, fullscreen, a shared screen, a real Claude request or the open view hold pop-ups back by design.
-    held = "du warst weg oder Vollbild" if s.get("paused") else \
-        "der Bildschirm wird gerade geteilt" if s.get("sharing") else \
-        "eine Claude-Rückfrage ist offen" if s.get("ask") else \
-        "die große Ansicht ist offen" if s.get("opened") else ""
+    # Away, fullscreen, a shared screen, a real request or pop-up or the open
+    # view: the test leaves the island alone (it only reads).
+    held = begin(args.warten)
     if held:
-        report("Pop-ups", "übersprungen", held)
-    quiet = s.get("quiet")
+        report("Test an der Insel", "übersprungen", held)
+    quiet = not held and (state() or {}).get("quiet")
     if quiet:
         ipc("notifications", "setDnd", "off")
     before = saved()
+    stopped = ""
     try:
         check_service()
         if not held:
@@ -1235,8 +1273,8 @@ def main():
             check_many_actions(run)
             check_omarchy_45(run)
             check_history(run, clear_all=not args.warten)
-        check_omarchy_ipc()
-        check_emotes()
+            check_omarchy_ipc()
+            check_emotes()
         check_settings()
         if not held:
             check_settings_page()
@@ -1244,9 +1282,12 @@ def main():
             check_spotify_key()
             check_screenshot()
             check_sharing(run, args.teilen)
+    except Interrupted as e:
+        stopped = WHY.get(str(e), str(e))
+        report("Test abgebrochen, nur die eigenen Testsachen aufgeräumt", "fehler", f"(dabei: {stopped})")
     finally:
-        ipc("omarchy-buddy.test", "testForget")
-        ipc("omarchy-buddy.test", "testSettings", "")
+        for method, *a in (("testForget",), ("testSettings", ""), ("testSpotify", ""), ("testOpen", "false"), ("testEnd",)):
+            ipc("omarchy-buddy.test", method, *a)
         if quiet:
             ipc("notifications", "setDnd", "on")
     check_saved(before)
@@ -1257,7 +1298,7 @@ def main():
     print(f"\n{len(results) - len(failed) - len(skipped)} ok, {len(failed)} Fehler, {len(skipped)} übersprungen")
     if not failed:
         return 0
-    return 3 if all("(dabei: " in r[2] for r in failed) else 1  # "(dabei: …)" comes from disturbed()
+    return 3 if stopped or all("(dabei: " in r[2] for r in failed) else 1  # "(dabei: …)" comes from disturbed()
 
 
 if __name__ == "__main__":

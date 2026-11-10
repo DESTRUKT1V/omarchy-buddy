@@ -77,10 +77,6 @@ check("Schritte: ohne Omarchy pacman und AUR einzeln",
       up.steps({"pacman": 1, "paru": 1, "flatpak": 2}, False, no_omarchy)
       == [["sudo", "pacman", "-Syu"], ["paru", "-Sua"], ["flatpak", "update"]])
 check("Schritte: nichts zu tun: leer", up.steps({}, False, have_all) == [])
-check("Schritte: Orca vor omarchy-update", up.steps({"pacman": 1}, False, have_all, "1.4.253")
-      == [["omarchy-buddy-update", "--orca"], ["omarchy-update"]])
-check("Updates: Orca mit Version gleich nach Omarchy",
-      up.summary({"pacman": 1}, True, "1.4.253") == [("omarchy", 1), ("orca", "1.4.253"), ("packages", 1)])
 
 installed = set()
 unsaid = []
@@ -561,133 +557,98 @@ check("Kuma-Login: unvollständig: nicht erreichbar", feed.test_kuma(base + "/st
 os.remove(feed.buddy.CONFIG)
 server.shutdown()
 
-# Orca's AppImage under ~/.local/opt/orca (lib/orca.py, #223): its version
-# from app.asar (package.json lies past the first 4 MB), the update item,
-# and the install against a local server, with folders in the sandbox only.
-import base64, hashlib, struct  # noqa: E402
+# Orca (lib/orca.py, #223, #258): the version of its AppImage under
+# ~/.local/opt/orca from app.asar (package.json lies past the first 4 MB);
+# a new release is only a news item with a link. Nothing downloads or runs
+# an AppImage (the catalog review: no independent proof it is genuine).
+import struct  # noqa: E402
 orca = feed.orca
 check("Orca: Ordner liegt in der Sandbox", orca.DIR == os.path.join(HOME, ".local/opt/orca"), orca.DIR)
 
 
 def make_orca(root, version, pad=5 * 2**20):
-    """A folder like the extracted AppImage: app.asar with package.json after
-    pad bytes, the program and the starter script."""
-    os.makedirs(os.path.join(root, "resources/bin"), exist_ok=True)
+    """A folder like the extracted AppImage: app.asar with package.json after pad bytes."""
+    os.makedirs(os.path.join(root, "resources"), exist_ok=True)
     pkg = json.dumps({"name": "orca", "version": version}).encode()
     index = json.dumps({"files": {"big.bin": {"size": pad, "offset": "0"},
                                   "package.json": {"size": len(pkg), "offset": str(pad)}}}).encode()
     index += b" " * (-len(index) % 4)
     with open(os.path.join(root, "resources/app.asar"), "wb") as f:
         f.write(struct.pack("<4I", 4, len(index) + 8, len(index) + 4, len(index)) + index + b"\0" * pad + pkg)
-    for p in ("orca-ide", "resources/bin/orca-ide"):
-        with open(os.path.join(root, p), "w") as f:
-            f.write("#!/bin/sh\n")
 
 
+check("Orca: ohne Orca keine Version", orca.version() is None)
 make_orca(orca.DIR, "1.4.242")
 check("Orca: Version aus app.asar, package.json hinter 4 MB", orca.version() == "1.4.242", orca.version())
-check("Orca: ohne Orca keine Version", orca.version(os.path.join(HOME, "nichts")) is None)
-YML = """version: 1.4.253
-files:
-  - url: orca-linux.AppImage
-    sha512: r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A==
-    size: 253147093
-path: orca-linux.AppImage
-sha512: r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A==
-releaseDate: '2026-11-07T10:34:19.667Z'
-"""
-check("Orca: latest-linux.yml gelesen", orca.release(YML) == ("1.4.253", "orca-linux.AppImage",
-      "r58pZk5Vi6DW1eXFuHNaOqzcMOPPd0+UPa/fMnYPKu6pTGrnhTFycmVLKSFnKeLbYdwd1v+qJHc1Fzg40FQi0A=="))
-try:
-    orca.release(YML.replace("path: orca-linux.AppImage", "path: ../../.bashrc"))
-    check("Orca: fremder Dateiname in latest-linux.yml abgelehnt", False)
-except ValueError:
-    check("Orca: fremder Dateiname in latest-linux.yml abgelehnt", True)
-check("Orca: Versionen als Zahlen verglichen", orca.newer("1.4.253", "1.4.242") and not orca.newer("1.4.99", "1.4.242"))
-PROC = os.path.join(HOME, "proc")
-os.makedirs(os.path.join(PROC, "77"))
-os.makedirs(os.path.join(PROC, "self"))
-os.symlink("/usr/bin/zsh", os.path.join(PROC, "77", "exe"))
-check("Orca: läuft nicht", not orca.running(orca.DIR, PROC))
-os.makedirs(os.path.join(PROC, "78"))
-os.symlink(os.path.join(orca.DIR, "orca-ide"), os.path.join(PROC, "78", "exe"))
-check("Orca: läuft (ein Prozess aus dem Ordner)", orca.running(orca.DIR, PROC))
-shutil.rmtree(os.path.join(PROC, "78"))
+check("Orca: kein Installer mehr in lib/orca.py", [n for n in ("install", "release", "latest_url", "running")
+                                                   if hasattr(orca, n)] == [])
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+code_files = [os.path.join(d, n) for top in ("bin", "lib", "shell") for d, _, fs in os.walk(os.path.join(ROOT, top)) for n in fs]
+runs_image = [os.path.relpath(f, ROOT) for f in code_files
+              if any(w in open(f, errors="replace").read().lower() for w in ("appimage-extract", "latest-linux", "releases/download"))]
+check("Orca: kein Code lädt oder startet ein AppImage", runs_image == [], runs_image)
+UPDATE = os.path.join(ROOT, "bin", "omarchy-buddy-update")
+check("Orca: omarchy-buddy-update kennt kein --orca mehr", '"--orca"' not in open(UPDATE).read())
 
+ORCA_API = "https://api.github.com/repos/stablyai/orca/releases/latest"
+asked = []
+def fetch_logged(url, *a, **kw):
+    asked.append(url)
+    return fetch(url, *a, **kw)
+feed.fetch = fetch_logged
 installed = {"checkupdates"}
 feed.shutil.which = lambda program: "/usr/bin/" + program if program in installed else None
 feed.buddy.unsay = lambda key: None
-feed.fetch = fetch
 feed.run = lambda cmd, timeout=30: outputs.get(cmd[0], (1, ""))
-pages[orca.latest_url()] = YML
+pages[ORCA_API] = json.dumps({"tag_name": "v1.4.253", "body": "- Schneller", "html_url": "https://github.com/stablyai/orca/releases/tag/v1.4.253"})
 fresh(checkupdates=(0, "linux 6.17.1-1 -> 6.17.2-1\n"))
 st = {}
 feed.check_updates(st, quiet=False)
-check("Updates: Orca im Eintrag, mit Version", [s["title"] for s in said] == ["Updates: Orca 1.4.253, 1 Paket"], said)
-del pages[orca.latest_url()]
-said.clear()
-st["updates_checked"] = 0
-feed.check_updates(st, quiet=False)
-check("Updates: GitHub offline: Orca bleibt im Eintrag", said == [] and st["orca_update"] == "1.4.253", (said, st))
-pages[orca.latest_url()] = YML.replace("1.4.253", "1.4.242")
-feed.check_updates(st, quiet=False)
-check("Updates: Orca aktuell: nur noch das Paket", [s["title"] for s in said] == ["Updates: 1 Paket"], said)
-feed.shutil.which = real_which
+check("Updates: Orca nie im Update-Eintrag, kein Abruf bei Orca",
+      [s["title"] for s in said] == ["Updates: 1 Paket"] and not any("orca" in u for u in asked) and "orca_update" not in st,
+      (said, asked, st))
+check("Updates: auch der Update-Terminal bekommt keinen Orca-Schritt",
+      all("orca" not in " ".join(c) for c in up.steps(st["update_counts"], False, have_all, st.get("git_updates", {}))))
 
-# The install, against a local server with a stand-in AppImage (a script
-# that "extracts" a prepared folder).
-NEW = os.path.join(HOME, "neu")
-make_orca(NEW, "1.4.253")
-image = f"#!/bin/sh\n[ \"$1\" = --appimage-extract ] && cp -r '{NEW}' squashfs-root && chmod -R a+w squashfs-root\n".encode()
-served = {}
-class Releases(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = served.get(self.path)
-        self.send_response(200 if body is not None else 404)
-        self.send_header("Content-Length", str(len(body or b"")))
-        self.end_headers()
-        self.wfile.write(body or b"")
-    def log_message(self, *a):
-        pass
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Releases)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-base = f"http://127.0.0.1:{server.server_port}/releases"
-yml = lambda sha: f"version: 1.4.253\npath: orca-linux.AppImage\nsha512: {sha}\n".encode()
-served["/releases/download/v1.4.253/orca-linux.AppImage"] = image
-served["/releases" + orca.latest_url("")] = yml(base64.b64encode(hashlib.sha512(b"anders").digest()).decode())
-import contextlib, io  # noqa: E402
-def install():
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        code = orca.install(orca.DIR, base, PROC)
-    return code, out.getvalue()
-leftovers = lambda: [n for n in os.listdir(os.path.dirname(orca.DIR)) if n != "orca"]
-code, out = install()
-check("Installieren: falsche Prüfsumme: Orca bleibt", code == 1 and "Prüfsumme" in out and orca.version() == "1.4.242"
-      and leftovers() == [], (code, out, leftovers()))
-served["/releases" + orca.latest_url("")] = yml(base64.b64encode(hashlib.sha512(image).digest()).decode())
-os.makedirs(os.path.join(PROC, "78"))
-os.symlink(os.path.join(orca.DIR, "orca-ide"), os.path.join(PROC, "78", "exe"))
-code, out = install()
-check("Installieren: Orca läuft: nicht ersetzt, Hinweis", code == 1 and "Schließ Orca" in out and orca.version() == "1.4.242", out)
-shutil.rmtree(os.path.join(PROC, "78"))
-real_max, orca.MAX_IMAGE = orca.MAX_IMAGE, 10  # a download bigger than the cap stops
-code, out = install()
-orca.MAX_IMAGE = real_max
-check("Installieren: zu großer Download: Abbruch, Orca bleibt, nichts übrig",
-      code == 1 and "larger than" in out and orca.version() == "1.4.242" and leftovers() == [], (code, out, leftovers()))
-code, out = install()
-check("Installieren: neue Version am selben Ort, Starter da, nichts übrig",
-      code == 0 and orca.version() == "1.4.253" and os.path.isfile(os.path.join(orca.DIR, "resources/bin/orca-ide"))
-      and os.path.isfile(os.path.join(orca.DIR, "orca-ide")) and leftovers() == [], (code, out, leftovers()))
-writable = [os.path.join(d, n) for d, ds, fs in os.walk(orca.DIR) for n in ds + fs if os.stat(os.path.join(d, n)).st_mode & 0o022]
-check("Installieren: nichts für andere schreibbar (das AppImage entpackt 0777)", writable == [], writable)
-code, out = install()
-check("Installieren: schon aktuell: nichts zu tun", code == 0 and "schon aktuell" in out, out)
-del served["/releases" + orca.latest_url("")]
-code, out = install()
-check("Installieren: GitHub offline: Fehler, Orca bleibt", code == 1 and orca.version() == "1.4.253", out)
-server.shutdown()
+fresh()
+st = {}
+feed.check_orca(st, quiet=False)
+check("Orca neu: Neuigkeit mit Link zum Release und installierter Version",
+      [(s["title"], s["url"], s["source"]) for s in said]
+      == [("Orca 1.4.253 erschienen", "https://github.com/stablyai/orca/releases/tag/v1.4.253", "coding")]
+      and "installiert: 1.4.242" in said[0]["body"] and "action" not in said[0], said)
+fresh()
+feed.check_orca(st, quiet=False)
+check("Orca: dieselbe Version nur einmal", said == [])
+make_orca(orca.DIR, "1.4.253")
+fresh()
+feed.check_orca({}, quiet=False)
+check("Orca: installiert ist schon so neu: still", said == [])
+shutil.rmtree(orca.DIR)
+asked.clear()
+feed.check_orca({}, quiet=False)
+check("Orca: nicht installiert: still, kein Abruf", said == [] and asked == [], asked)
+installed.add("orca-ide")  # Orca installed some other way (AUR)
+feed.check_orca({}, quiet=False)
+check("Orca: anders installiert: Neuigkeit ohne Version", [s["title"] for s in said] == ["Orca 1.4.253 erschienen"]
+      and "installiert" not in said[0]["body"], said)
+
+# An update item from before #258 that still names Orca is replaced on the
+# next run, without Orca, even before the next 12-hourly check.
+now = time.time()
+os.makedirs(feed.STATE_DIR, exist_ok=True)
+with open(feed.STATE, "w") as f:
+    json.dump({"updates_checked": now, "net_checked": now, "update_counts": {"pacman": 1}, "orca_update": "1.4.253",
+               "update_sig": json.dumps([["orca", "1.4.253"], ["packages", 1]])}, f)
+fresh()
+feed.main()
+with open(feed.STATE) as f:
+    st = json.load(f)
+check("Orca: alter Update-Eintrag mit Orca wird ersetzt", [s["title"] for s in said if s.get("key") == "updates"]
+      == ["Updates: 1 Paket"] and "orca_update" not in st, (said, st))
+os.remove(feed.STATE)
+feed.shutil.which = real_which
+feed.fetch = fetch
 
 # A click on a crash (bin/omarchy-buddy-crash): only the user's own core
 # dump of that PID reaches the agent's prompt, not a newer one of another

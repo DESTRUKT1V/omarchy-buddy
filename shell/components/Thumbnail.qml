@@ -5,10 +5,13 @@ import "../theme"
 
 // A picture sent along (avatar, cover, screenshot) with rounded corners,
 // whole and fitted into size × size; hidden when it is gone, or a quiet
-// placeholder while a cover loads.
+// placeholder while a cover loads. A cover on the net reaches Image only
+// as the checked local file Covers fetched (#251).
 Item {
   id: thumb
-  property alias source: thumbImage.source
+  property string source: ""
+  onSourceChanged: Covers.want(source)
+  Component.onCompleted: Covers.want(source)
   property int size: 56
   property bool placeholder: false
   property bool show: true
@@ -28,6 +31,7 @@ Item {
   Image {
     id: thumbImage
     anchors.fill: parent
+    source: Covers.source(thumb.source)
     sourceSize.width: thumb.size * 2; sourceSize.height: thumb.size * 2
     fillMode: Image.PreserveAspectFit
     asynchronous: true

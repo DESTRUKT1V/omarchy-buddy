@@ -8,6 +8,7 @@
 #                           ("~/path", kind, plain)
 #   switched_off()          those the settings switched off
 #   watched(url, own)       the remote is someone else's public https repo
+#   safe(path, remote)      git may contact the remote: no credentials in its URLs
 #   check(path, kind)       "new", "build" (only reported), "current",
 #                           "dirty", "detached" or None (could not ask)
 #   offline(path, kind, pending)  what the settings page says, no network
@@ -23,8 +24,10 @@
 # itself, Omarchy's own clone, and every remote that is no public https
 # address (ssh aliases like an own Forgejo, local paths) or belongs to the
 # user's GitHub account (gh's hosts.yml). git never asks (no terminal
-# prompt, ssh BatchMode), runs with a timeout and gets the remote's name,
-# never its URL (it may hold a token).
+# prompt, ssh BatchMode), runs with a timeout and gets the remote's name.
+# A remote whose URL (as git uses it, insteadOf applied) holds credentials
+# is never asked (#257): git passes the full URL to git-remote-https as an
+# argument, which every account on the machine can read in the process list.
 #
 # A folder copied or unpacked into such a place brings its own .git/config,
 # which git obeys: core.fsmonitor, filters, credential helpers, insteadOf
@@ -112,8 +115,8 @@ def watched(url, own=()):
     """True for https://HOST/OWNER/… on a public host whose OWNER is not one
     of `own`: software someone else publishes. ssh remotes, local paths and
     hosts in the own network belong to the user."""
-    m = re.match(r"https://(?:[^@/]*@)?([^/:@]+)(?::\d+)?/([^/]+)/[^/]", url or "")
-    if not m:
+    m = re.match(r"https://([^/:@]+)(?::\d+)?/([^/]+)/[^/]", url or "")
+    if not m or secret(url):
         return False
     host, owner = m.group(1).lower(), m.group(2).lower()
     try:
@@ -123,6 +126,26 @@ def watched(url, own=()):
         if "." not in host or host.endswith((".local", ".lan", ".home", ".internal", ".localdomain")):
             return False
     return owner not in own
+
+
+def secret(url):
+    """The URL may carry credentials: user info (https://user:token@…, also
+    behind a helper prefix like https::https://…) or a query (?private_token=…)."""
+    return bool(re.search(r"[@?]", url))
+
+
+def urls(path, remote):
+    """The remote's URLs as git uses them (insteadOf applied, no network),
+    [] when it is no configured remote."""
+    code, out = git(path, "remote", "get-url", "--all", "--", remote)
+    return out.splitlines() if code == 0 else []
+
+
+def safe(path, remote):
+    """git may contact the remote: it is configured and none of its URLs
+    carries credentials (#257, they would end up in git-remote-https's argv)."""
+    found = urls(path, remote)
+    return bool(found) and not any(secret(u) for u in found)
 
 
 def plain(path):
@@ -154,12 +177,13 @@ def mount_points(table="/proc/self/mounts"):
 
 
 def find(home=None, me=ROOT):
-    """{"~/path": kind} for the git clones to watch: clones() with a plain config."""
+    """{"~/path": kind} for the git clones to watch: clones() with a plain config
+    and origin's URLs, as git uses them, still someone else's public repo."""
     return {path: kind for path, kind, ok in clones(home, me) if ok}
 
 
 def clones(home=None, me=ROOT):
-    """("~/path", kind, plain(path)) for the git clones at the software places
+    """("~/path", kind, ok) for the git clones at the software places
     whose origin someone else publishes. Mount points are left alone before
     anything looks into them (a NAS would wake up for nothing), symlinks too
     (a linked working copy, like a plugin under development), each folder
@@ -183,7 +207,8 @@ def clones(home=None, me=ROOT):
                 continue
             seen.add(real)
             if watched(git(path, "config", "--get", "remote.origin.url")[1], own):
-                yield tilde(path, home), kind, plain(path)
+                found = urls(path, "origin")  # as git uses them: an insteadOf may add a token (#257)
+                yield tilde(path, home), kind, plain(path) and bool(found) and all(watched(u, own) for u in found)
 
 
 def switched_off():
@@ -209,6 +234,8 @@ def local(path, kind):
             ref = git(path, "config", "--get", f"branch.{branch}.merge")[1] or None
             if remote == "." or not (ref or "").startswith("refs/heads/"):
                 remote = ref = None
+    if remote and not safe(path, remote):  # #257: not even ls-remote
+        remote = ref = None
     dirty = git(path, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all")
     return {"head": head, "remote": remote, "ref": ref, "dirty": dirty[0] != 0 or dirty[1] != ""}
 
@@ -301,6 +328,13 @@ def confirm(question):
     return answer[:1] in ("", "j", "y")
 
 
+def omz_safe(path):
+    """Every remote oh-my-zsh's upgrade.sh may fetch from is safe(): it picks
+    any remote with oh-my-zsh's address, else oh-my-zsh.remote or origin."""
+    picked = git(path, "config", "--local", "--get", "oh-my-zsh.remote")[1] or "origin"
+    return all(safe(path, r) for r in git(path, "remote")[1].split() + [picked])
+
+
 def update(path, kind, ask=confirm):
     """Brings one clone (path as "~/…") up to date in the terminal: shows
     what changed and asks first. 0 also when it was left alone on purpose."""
@@ -313,11 +347,11 @@ def update(path, kind, ask=confirm):
     if loc["dirty"]:
         print(t("git.dirty"))
         return 0
-    if kind == "plugin":  # shows the diff and asks itself, checks the plugin afterwards
-        return subprocess.call(["omarchy-plugin-update", os.path.basename(where)], env=ENV)
-    if not loc["remote"]:
+    if not loc["remote"] or kind == "omz" and not omz_safe(where):
         print(t("git.detached"))
         return 0
+    if kind == "plugin":  # shows the diff and asks itself, checks the plugin afterwards
+        return subprocess.call(["omarchy-plugin-update", os.path.basename(where)], env=ENV)
     build = kind == "git" and build_step(where)
     if build:
         print(t("git.build", name=name(path), file=build))

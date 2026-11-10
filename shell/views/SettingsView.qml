@@ -235,6 +235,7 @@ Column {
       // What only some need (#193, B12): folded under "Quellen".
       Item {
         readonly property string name: Theme.t("settings.sources")  // for the test IPC (Probe.nameOf)
+        readonly property string probeOwner: "view"  // only folds (Probe.ownerOf)
         width: parent.width
         height: sourcesTitle.implicitHeight + Theme.s(12) + Theme.s(8)
         Click {
@@ -314,7 +315,7 @@ Column {
           InputField {
             id: kumaField
             width: pageColumn.width - kumaSave.width - Theme.s(14)
-            height: kumaSave.height
+            fieldHeight: kumaSave.height
             text: view.values.feed.kuma
             placeholder: "https://status.example.com/status/NAME"
             name: Theme.t("settings.kuma")
@@ -390,7 +391,7 @@ Column {
         SettingRow {
           visible: view.spotify.connected
           label: Theme.t("settings.spotifyConnected")
-          ActionButton { label: Theme.t("settings.spotifyDisconnect"); onClicked: view.spotify.disconnect() }
+          ActionButton { label: Theme.t("settings.spotifyDisconnect"); enabled: !view.spotify.disconnecting; onClicked: view.spotify.disconnect() }
         }
         Hint {
           visible: view.spotify.seen && !view.spotify.connected
@@ -411,7 +412,7 @@ Column {
           InputField {
             id: clientField
             width: pageColumn.width - connectButton.width - Theme.s(14)
-            height: connectButton.height
+            fieldHeight: connectButton.height
             text: view.spotify.clientId
             placeholder: Theme.t("settings.spotifyClientId")
             onAccepted: if (text.trim() !== "") view.spotify.connect(text)

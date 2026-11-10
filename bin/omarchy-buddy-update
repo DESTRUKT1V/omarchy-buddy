@@ -7,7 +7,6 @@
 #
 #   omarchy-buddy-update          open the terminal
 #   omarchy-buddy-update --run    the updates, in this terminal
-#   omarchy-buddy-update --orca   only Orca's AppImage (lib/orca.py), one of the steps
 #   omarchy-buddy-update --git    only the git clones with a new version (lib/gitwatch.py,
 #                                 each after its diff and a question), one of the steps
 
@@ -22,7 +21,6 @@ BIN = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(BIN), "lib"))
 import buddy  # noqa: E402
 import gitwatch  # noqa: E402
-import orca  # noqa: E402
 import updates  # noqa: E402
 from texts import t  # noqa: E402
 
@@ -57,14 +55,14 @@ def run(wait):
     with buddy.private_open(os.path.join(buddy.STATE_DIR, "updates-ran")):
         pass  # the feed checks again on its next run, even after a restart
     todo = updates.steps(st.get("update_counts", {}), st.get("omarchy_ready", False), shutil.which,
-                         st.get("orca_update", ""), st.get("git_updates", {}))
+                         st.get("git_updates", {}))
     if not todo:
         print(t("updates.none"))
     failed = []
     for cmd in todo:
         print("\n\033[1m" + t("updates.step", command=shlex.join(cmd)) + "\033[0m", flush=True)
         try:
-            own = cmd in (updates.ORCA_STEP, updates.GIT_STEP)
+            own = cmd == updates.GIT_STEP
             code = subprocess.call([os.path.join(BIN, cmd[0]), *cmd[1:]] if own else cmd)
         except OSError:
             code = -1
@@ -84,13 +82,6 @@ def run(wait):
     return 1 if failed else 0
 
 
-def orca_only():
-    try:
-        return orca.install()
-    except KeyboardInterrupt:
-        return 130
-
-
 def git_only():
     """The clones the feed found with a new version, one after the other;
     a failed one does not stop the rest."""
@@ -106,5 +97,5 @@ def git_only():
 
 
 if __name__ == "__main__":
-    sys.exit(orca_only() if "--orca" in sys.argv else git_only() if "--git" in sys.argv
+    sys.exit(git_only() if "--git" in sys.argv
              else run("--wait" in sys.argv) if "--run" in sys.argv else terminal())

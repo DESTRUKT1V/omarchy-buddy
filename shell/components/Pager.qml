@@ -6,6 +6,7 @@ Row {
   id: pager
   required property var app
   readonly property var sessions: app.sessions
+  readonly property string probeOwner: "view"  // only pages (Probe.ownerOf)
   visible: sessions.asks.length > 1
   spacing: Theme.s(4)
   Link { text: "󰅁"; name: Theme.t("a11y.prev"); font.pixelSize: Theme.fTitle; leftPadding: Theme.s(5); rightPadding: Theme.s(5); anchors.verticalCenter: parent.verticalCenter; onActivated: pager.sessions.pageAsk(-1) }

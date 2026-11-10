@@ -3,14 +3,14 @@
 # omarchy-buddy-say. Run by omarchy-buddy-feed.timer every 15 minutes; the island's
 # "jetzt prüfen" runs it with --now.
 #
-#   System  pending updates every 12 h, one item for all package managers,
-#           Orca's AppImage and, checked hourly, software installed with
-#           git clone (lib/updates.py, lib/orca.py, lib/gitwatch.py; a click
-#           runs omarchy-buddy-update), full disks,
+#   System  pending updates every 12 h, one item for all package managers
+#           and, checked hourly, software installed with git clone
+#           (lib/updates.py, lib/gitwatch.py; a click runs
+#           omarchy-buddy-update), full disks,
 #           failed units, crashes (coredumpctl; a click runs omarchy-buddy-crash)
 #   Coding  new Claude Code version with the top changelog lines, new Omarchy
-#           releases, Orca releases (only with Orca installed and not
-#           already in the update item)
+#           releases, Orca releases (only with Orca installed; only a hint
+#           with a link, lib/orca.py)
 #   Kuma    monitors down and back up on an Uptime Kuma status page (only with
 #           "feed": {"kuma": "https://HOST/status/SLUG"}; behind a login with
 #           "kuma_auth", an OAuth2 token, #240), every run
@@ -141,16 +141,6 @@ def check_updates(st, quiet):
         counts[name] = n
         if name == "pacman":
             omarchy = updates.omarchy_ready(code, out)
-    installed = orca.version()
-    if not installed:
-        st.pop("orca_update", None)
-    else:
-        try:
-            latest = orca.release(fetch(orca.latest_url()))[0]
-            st["orca_update"] = latest if orca.newer(latest, installed) else ""
-            worked = True
-        except (OSError, ValueError) as e:  # offline: keeps what it said last time
-            print(f"omarchy-buddy-feed: orca: {e}", file=sys.stderr)
     if not worked:
         return
     st["updates_checked"] = time.time()
@@ -160,7 +150,7 @@ def check_updates(st, quiet):
 
 def pending(st):
     return updates.summary(st.get("update_counts", {}), st.get("omarchy_ready", False),
-                           st.get("orca_update", ""), st.get("git_updates", {}))
+                           st.get("git_updates", {}))
 
 
 def post_updates(st):
@@ -216,7 +206,7 @@ def git_list():
 
 
 def update_title(parts):
-    """"Updates: Omarchy, Orca 1.4.253, 12 Pakete, 1 mise-Tool" from updates.summary()."""
+    """"Updates: Omarchy, 12 Pakete, 1 mise-Tool" from updates.summary()."""
     return t("feed.updates", parts=", ".join(t("updates." + g + (".one" if n == 1 else ""), n=n) for g, n in parts))
 
 
@@ -371,6 +361,15 @@ def check_release(st, quiet, repo, name, installed=None):
         say(t("feed.release", name=name, version=tag), body, source="coding", url=data.get("html_url", ""))
     if tag:
         st[key] = tag
+
+
+def check_orca(st, quiet):
+    """"Orca X erschienen" with a link to the release, when Orca is installed
+    (its AppImage under ~/.local/opt/orca or an orca-ide elsewhere). Only a
+    hint: the buddy never downloads or runs Orca (#258)."""
+    have = orca.version()
+    if have or shutil.which("orca-ide"):
+        check_release(st, quiet, orca.REPO, "Orca", have)
 
 
 KUMA_SETTLE = 600  # back up only after 10 min without a down beat: a flapping monitor is one outage
@@ -633,6 +632,8 @@ def main():
         except (OSError, ValueError):
             st = {}
         quiet = not st  # first run: only learn the current state
+        if st.pop("orca_update", None) and update_news():  # until 1.3.0 Orca's AppImage was in the update item (#258)
+            post_updates(st)
 
         feed = feed_sources()
         checks = [check_fallback, check_omarchy_installed, check_disks, check_failed_units, check_crashes]
@@ -656,11 +657,8 @@ def main():
             if update_news():
                 checks.append(check_git)
             checks += [check_claude_code,
-                       lambda s, q: check_release(s, q, "basecamp/omarchy", "Omarchy", s.get("omarchy_version", "").split("-")[0] or None)]
-            have = orca.version()
-            # Orca's AppImage under ~/.local/opt is in the update item; otherwise "Orca X erschienen"
-            if (have or shutil.which("orca-ide")) and not (have and update_news()):
-                checks.append(lambda s, q: check_release(s, q, orca.REPO, "Orca", have))
+                       lambda s, q: check_release(s, q, "basecamp/omarchy", "Omarchy", s.get("omarchy_version", "").split("-")[0] or None),
+                       check_orca]
         for check in checks:
             try:
                 check(st, quiet)

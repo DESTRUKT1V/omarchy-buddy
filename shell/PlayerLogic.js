@@ -152,3 +152,50 @@ function connectError(error) {
   return ["clientid", "port", "cancelled", "offline", "forbidden"].indexOf(error) !== -1
     ? "spotify.connect." + error : "spotify.connect.failed"
 }
+
+// Covers (#251). Qt's own image request reads an answer whole, without a
+// byte or time limit, so a cover on the net reaches Image only as the
+// checked file bin/omarchy-buddy-cover made of it (Covers.qml fetches one at
+// a time). known: { url: { path, at } }, path "" when it failed.
+var coverRetryMs = 60000  // a failed cover is tried again after this, when shown again
+var coverKeep = 24        // covers remembered (the helper keeps more files)
+var coverQueueMax = 4     // waiting at once; the newest win
+
+// What Image gets for a picture's address: one on this machine (a path,
+// file://, image://) as it is; one on the net only as its checked file, "" until then.
+function coverSource(url, known) {
+  url = String(url || "")
+  if (url.indexOf("://") === -1 || /^(file|image):\/\//i.test(url)) return url
+  var k = known[url]
+  return k && k.path ? k.path : ""
+}
+
+// Whether to fetch url: https (never plain http or other schemes), not
+// fetched yet or failed coverRetryMs ago, not waiting already.
+function coverWanted(url, known, queue, now) {
+  url = String(url || "")
+  if (!/^https:\/\/[^\/]/i.test(url) || queue.indexOf(url) !== -1) return false
+  var k = known[url]
+  return !k || (!k.path && now - k.at >= coverRetryMs)
+}
+
+function coverQueued(queue, url) {
+  var q = queue.filter(function (u) { return u !== url })
+  q.push(url)
+  return q.slice(-coverQueueMax)
+}
+
+// known with url's result; only the newest coverKeep stay.
+function coverKnown(known, url, path, now) {
+  var urls = Object.keys(known).filter(function (u) { return u !== url }).slice(-(coverKeep - 1))
+  var next = {}
+  urls.forEach(function (u) { next[u] = known[u] })
+  next[url] = { path: path, at: now }
+  return next
+}
+
+// The helper's answer: its file in the private covers folder, else "".
+function coverPath(text) {
+  text = String(text || "").trim()
+  return /^file:\/\/\/[^\s?#]+\/omarchy-buddy\/covers\/[0-9a-f]{32}\.(png|jpg|webp)$/.test(text) && text.indexOf("..") === -1 ? text : ""
+}

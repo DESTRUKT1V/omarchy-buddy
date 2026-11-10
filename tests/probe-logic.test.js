@@ -88,3 +88,107 @@ test("Test-IPC: layout nennt die unerreichbaren", () => {
   assert.deepEqual(out.unreachable, ["Ablehnen"])
   assert.deepEqual(out.items.map(i => [i.name, i.reach, i.w]), [["Erlauben", true, 80], ["Ablehnen", false, 80]])
 })
+
+// #256: the test acts only on its own things, decided at the moment it acts.
+const sess = (id) => ({ id: id, requests: [{ id: "r1" }] })
+const ask = (id) => ({ key: id + "/r1", session: sess(id), request: { id: "r1" } })
+const ctx = (notes, extra) => Object.assign({ notes: notes, removed: [], canUndo: false, testPlayer: false }, extra)
+const calm = (extra) => Object.assign({ asks: [], toast: null, queue: [], heldBack: [], opened: false, viewByTest: false,
+                                         settingsShown: false, settingsByTest: false, paused: false, known: null, records: [] }, extra)
+
+test("Test-IPC: Besitzer eines Knopfs, vom nächsten Elternteil aufwärts", () => {
+  assert.deepEqual(L.owner([{}, { ask: ask("buddy-test-1") }, { ask: ask("echt") }]), { kind: "session", id: "buddy-test-1" })
+  assert.deepEqual(L.owner([{ session: sess("echt") }]), { kind: "session", id: "echt" })
+  assert.deepEqual(L.owner([{ model: { label: "Möglichkeit" } }, { model: sess("s") }]), { kind: "session", id: "s" },
+                   "Auswahlzeile einer Frage gehört zur Sitzung darüber")
+  const n = note("k1", "Buddy-Test")
+  assert.equal(L.owner([{ note: n }]).id, "k1")
+  assert.equal(L.owner([{ model: n }]).kind, "note")
+  assert.deepEqual(L.owner([{ marker: "view" }, { ask: ask("buddy-test-1") }]), { kind: "view" })
+  assert.deepEqual(L.owner([{ ask: {} }, { session: {} }, {}]), { kind: "none" }, "leere Vorgaben zählen nicht")
+})
+
+test("Test-IPC: nur die genannte Testsitzung, nie eine echte", () => {
+  const own = { kind: "session", id: "buddy-test-1" }
+  assert.equal(L.allows(own, "buddy-test-1", ctx([])), true)
+  assert.equal(L.allows(own, "buddy-test-2", ctx([])), false, "andere Testsitzung als gemeint")
+  assert.equal(L.allows({ kind: "session", id: "echt" }, "echt", ctx([])), false, "echte Sitzung, auch wenn genannt")
+  assert.equal(L.allows({ kind: "none" }, "view", ctx([])), false, "Unbekanntes nie")
+  assert.equal(L.allows({ kind: "view" }, "view", ctx([])), true)
+  assert.equal(L.allows({ kind: "view" }, "buddy-test-1", ctx([])), false)
+  assert.equal(L.allows({ kind: "player" }, "player", ctx([])), false, "Musik des Nutzers")
+  assert.equal(L.allows({ kind: "player" }, "player", ctx([], { testPlayer: true })), true)
+})
+
+test("Test-IPC: Meldung nur, wenn sie und ihr ganzes Bündel dem Test gehören", () => {
+  const mine = note("k1", "Buddy-Test"), real = note("k2", "Beeper")
+  assert.equal(L.allows({ kind: "note", id: "k1", item: mine }, "k1", ctx([mine, real])), true)
+  assert.equal(L.allows({ kind: "note", id: "k2", item: real }, "k2", ctx([mine, real])), false)
+  const said = note("buddy-test-x", "", { group: "\nFertig" }), saidReal = note("echt", "", { group: "\nFertig" })
+  assert.equal(L.allows({ kind: "note", id: "buddy-test-x", item: said }, "buddy-test-x", ctx([said, saidReal])), false,
+               "× löscht das Bündel mit der echten gleichnamigen Meldung")
+})
+
+test("Test-IPC: alle löschen und Rückgängig nur über reine Testmeldungen", () => {
+  const mine = note("k1", "Buddy-Test"), real = note("k2", "Beeper")
+  const hist = { kind: "history" }
+  assert.equal(L.allows(hist, "history", ctx([mine])), true)
+  assert.equal(L.allows(hist, "history", ctx([mine, real])), false, "echter Verlauf")
+  assert.equal(L.allows(hist, "history", ctx([real], { canUndo: true, removed: [mine] })), true, "Rückgängig holt nur Testmeldungen")
+  assert.equal(L.allows(hist, "history", ctx([mine], { canUndo: true, removed: [real] })), false,
+               "Rückgängig würde das Löschen des Nutzers zurücknehmen")
+  const snap = L.snapshot(Object.assign(calm(), { mode: "pill", notes: [mine, real], sessions: [], news: [] }), () => false)
+  assert.equal(snap.realNotes, 1)
+})
+
+test("Test-IPC: Sammel-Pop-up gehört dem Test nur, wenn alles darin seins ist", () => {
+  assert.equal(L.isTest({ title: "6 Meldungen", testOnly: true }), true)
+  assert.equal(L.isTest({ title: "6 Meldungen", testOnly: false }), false)
+  assert.equal(L.isTest({ title: "6 Meldungen" }), false)
+  assert.equal(L.isTest({ key: "buddy-test-run-fertig", source: "claude" }), true, "omarchy-buddy-say mit Testschlüssel")
+  assert.equal(L.isTest({ key: "done-buddy-test-1x-1700", source: "claude" }), true, "Hook: Testsitzung fertig")
+  assert.equal(L.isTest({ key: "done-4f1c-1700", source: "claude" }), false)
+})
+
+test("Test-IPC: Omarchys IPC nur, wenn alles Getroffene dem Test gehört", () => {
+  const mine = { app: "Buddy-Test", key: "1" }, real = { app: "Beeper", key: "2" }
+  const t = (m, s) => L.omarchyTargets(m, Object.assign({ mode: "toast", toast: mine, queue: [] }, s))
+  assert.deepEqual(t("act"), [mine])
+  assert.deepEqual(t("act", { mode: "needs" }), [], "Pop-up hinter einer Rückfrage wird nicht getroffen")
+  assert.deepEqual(t("dismissAll", { queue: [real] }), [mine, real])
+  assert.deepEqual(t("dismiss", { mode: "needs", queue: [real] }), [mine, real])
+  assert.deepEqual(t("showHistory"), [])
+  assert.equal(t("clear"), null, "den ganzen Verlauf leeren darf der Test nie")
+})
+
+test("Test-IPC: echte Ankunft zwischen Beobachten und Klicken stoppt den Lauf", () => {
+  assert.equal(L.interruption(calm({ asks: [ask("buddy-test-1")], toast: { app: "Buddy-Test", key: "1" } })), "")
+  // The test saw its own request; before its click a real one arrives.
+  assert.equal(L.interruption(calm({ asks: [ask("buddy-test-1"), ask("echt")] })), "ask")
+  assert.equal(L.interruption(calm({ toast: { app: "Buddy-Test", key: "1" }, queue: [{ app: "Beeper", key: "2" }] })), "popup")
+  assert.equal(L.interruption(calm({ heldBack: [{ app: "Beeper", key: "2" }] })), "popup", "auch zurückgehalten (offene Ansicht)")
+  assert.equal(L.interruption(calm({ paused: true })), "away")
+  // Silently (Ruhemodus, sharing, low urgency): only the history and the news get it.
+  const old = note("k1", "Beeper"), mine = note("k2", "Buddy-Test"), fresh = note("k3", "Beeper")
+  const known = L.realKeys([old, mine])
+  assert.deepEqual(known, { k1: true })
+  assert.equal(L.interruption(calm({ known: known, records: [mine, old] })), "")
+  assert.equal(L.interruption(calm({ known: known, records: [fresh, mine, old] })), "popup")
+  assert.equal(L.interruption(calm({ known: known, records: [{ key: "update", title: "Update", time: 2 }] })), "popup", "eine Neuigkeit")
+  assert.equal(L.interruption(calm({ known: L.realKeys([{ key: "", time: 1 }]), records: [{ key: "", time: 2 }] })), "popup",
+               "Neuigkeit ohne Schlüssel")
+  // And the click itself is bound to the test's session: the real request's
+  // button with the same label is never the one clicked.
+  assert.equal(L.allows(L.owner([{ ask: ask("echt") }]), "buddy-test-1", ctx([])), false)
+})
+
+test("Test-IPC: Ansichtswechsel durch den Nutzer stoppt den Lauf, der des Tests nicht", () => {
+  assert.equal(L.interruption(calm({ opened: true, viewByTest: true })), "")
+  assert.equal(L.interruption(calm({ opened: true })), "view", "der Nutzer öffnet die große Ansicht")
+  assert.equal(L.interruption(calm({ opened: true, viewByTest: true, settingsShown: true })), "view",
+               "der Nutzer öffnet die Einstellungen in der Ansicht des Tests")
+  // In the open view a real session's "Erlauben" stands beside the test's:
+  // only the test's own may be clicked.
+  const buttons = [[{}, { session: sess("echt") }], [{}, { session: sess("buddy-test-1") }]]
+  assert.deepEqual(buttons.map(b => L.allows(L.owner(b), "buddy-test-1", ctx([]))), [false, true])
+})

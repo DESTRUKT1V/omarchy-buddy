@@ -2,7 +2,8 @@
 # omarchy-buddy-spotify against a stand-in for Spotify (#121): the sign-in
 # with PKCE (a fake xdg-open plays the browser and the user), the tokens'
 # file (600, never printed), refreshing, checking, saving and removing a
-# track, and each error the island shows. Nothing reaches Spotify; HOME is a sandbox.
+# track, and each error the island shows; a refresh answered late after
+# disconnecting or connecting again (#253). Nothing reaches Spotify; HOME is a sandbox.
 # Aufruf: tests/spotify-test.py
 import base64, hashlib, json, os, socket, stat, subprocess, sys, tempfile, threading, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,7 +24,9 @@ def free_port():
 
 # What the stand-in does: how the user answers in the browser, which
 # answers the API gives, and what it has seen.
-spot = {"deny": False, "api": 200, "revoked": False, "saved": set(), "challenge": "", "issued": [], "refreshes": 0, "bad": []}
+spot = {"deny": False, "api": 200, "revoked": False, "saved": set(), "challenge": "", "issued": [], "refreshes": 0, "bad": [],
+        "hold": None, "real": False, "late": []}
+arrived = threading.Event()  # a held refresh reached the stand-in
 
 
 class Spotify(BaseHTTPRequestHandler):
@@ -89,6 +92,17 @@ class Spotify(BaseHTTPRequestHandler):
             spot["refreshes"] += 1
             if spot["revoked"] or form.get("refresh_token") != spot["issued"][-1]:
                 return self.reply(400, {"error": "invalid_grant", "error_description": "Refresh token revoked"})
+            if spot["hold"]:  # answers only once the test lets go: a late reply for the old tokens
+                release, spot["hold"] = spot["hold"], None
+                arrived.set()
+                release.wait(20)
+                if spot["real"]:
+                    return self.reply(200, self.token())
+                n = len(spot["late"])
+                late = {"access_token": f"LATE-ACCESS-{n}-secret", "token_type": "Bearer", "expires_in": 3600,
+                        "refresh_token": f"LATE-REFRESH-{n}-secret"}
+                spot["late"] += [late["access_token"], late["refresh_token"]]
+                return self.reply(200, late)
             return self.reply(200, self.token())
         self.reply(400, {"error": "unsupported_grant_type"})
 
@@ -193,10 +207,63 @@ check("Port belegt → port", run("connect")[1] == {"error": "port"})
 busy.close()
 
 check("trennen", run("disconnect")[1] == {"connected": False})
-check("getrennt: Client-ID bleibt, Tokens weg", stored() == {"client_id": "abc123"} and run("status")[1] == {"connected": False, "clientId": "abc123", "redirect": REDIRECT})
+check("getrennt: Client-ID bleibt, Tokens weg", set(stored()) == {"client_id", "generation"} and stored()["client_id"] == "abc123" and run("status")[1] == {"connected": False, "clientId": "abc123", "redirect": REDIRECT})
 check("neu verbinden ohne ID nimmt die alte", run("connect")[1] == {"connected": True})
 
-leaked = [s for s in spot["issued"] if any(s in p for p in printed)]
+
+def late_refresh(meanwhile):
+    """A check whose token refresh Spotify answers only after meanwhile() ran; its reply."""
+    data = stored()
+    data["expires_at"] = 0
+    with open(FILE, "w") as f:
+        json.dump(data, f)
+    release = threading.Event()
+    arrived.clear()
+    spot["hold"] = release
+    slow = subprocess.Popen([sys.executable, HELPER, "check", TRACK], env=ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    check("späte Erneuerung: Anfrage unterwegs", arrived.wait(10))
+    meanwhile()
+    release.set()
+    outs, errs = slow.communicate(timeout=30)
+    printed.append(outs + errs)
+    return json.loads(outs)
+
+
+# Refresh, then "Trennen" before Spotify answers (#253): the old tokens stay gone.
+r = late_refresh(lambda: check("späte Erneuerung: trennen", run("disconnect")[1] == {"connected": False}))
+check("Erneuern nach Trennen: Antwort verworfen", r == {"error": "unconnected", "uri": TRACK}, r)
+data = stored()
+check("Erneuern nach Trennen: keine Tokens zurück", set(data) == {"client_id", "generation"} and data["client_id"] == "abc123", sorted(data))
+check("Erneuern nach Trennen: Status getrennt", run("status")[1]["connected"] is False)
+check("Erneuern nach Trennen: Prüfen sagt unconnected", run("check", TRACK)[1] == {"error": "unconnected", "uri": TRACK})
+
+# Refresh for account A, account B connects before Spotify answers: B stays.
+check("Konto A verbinden", run("connect")[1] == {"connected": True})
+a = stored()
+b = {}
+
+
+def connect_b():
+    check("Konto B verbinden, während A erneuert", run("connect")[1] == {"connected": True})
+    b.update(stored())
+
+
+r = late_refresh(connect_b)
+check("Erneuern A nach Verbinden B: Antwort verworfen", r == {"error": "unconnected", "uri": TRACK}, r)
+check("Erneuern A nach Verbinden B: B bleibt gespeichert", stored() == b and b["refresh_token"] != a["refresh_token"]
+      and b["generation"] != a["generation"], sorted(stored()))
+check("nirgends ein spätes Token", not any(s in json.dumps(stored()) for s in spot["late"]))
+check("Konto B: Prüfen geht", run("check", TRACK)[1] == {"uri": TRACK, "saved": True})
+check("Konto B: Speichern geht", run("save", TRACK)[1] == {"uri": TRACK, "saved": True})
+
+# Answered late with nothing in between: an ordinary refresh, stored.
+spot["real"] = True
+r = late_refresh(lambda: None)
+spot["real"] = False
+check("späte Erneuerung ohne Wechsel: geht", r == {"uri": TRACK, "saved": True}, r)
+check("späte Erneuerung ohne Wechsel: gespeichert", stored()["refresh_token"] == spot["issued"][-1] and stored()["generation"] == b["generation"])
+
+leaked = [s for s in spot["issued"] + spot["late"] if any(s in p for p in printed)]
 check("kein Token in der Ausgabe", not leaked, leaked)
 check("Ausgabe immer eine JSON-Zeile", all(p.count("\n") == 1 for p in printed), [p for p in printed if p.count("\n") != 1])
 

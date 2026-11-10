@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# A music player's cover from the net (MPRIS artUrl), for the island (#251):
+# Qt's own image request reads an answer whole, without a byte or time
+# limit (catalog review). This fetches it bounded instead and hands Qt only
+# a checked file on this machine.
+#
+#   omarchy-buddy-cover <<< https://…   prints file:///run/user/…/covers/<hash>.<ext>,
+#                                       or nothing when there is no usable cover
+#
+# The address comes on stdin, never as an argument: it tells what plays, and
+# other users can read /proc/*/cmdline (#219).
+#
+# Only https, also after each of at most MAX_REDIRECTS redirects, never with
+# a name and password in the address; at most MAX_BYTES within SECONDS for
+# everything (a watchdog ends the process, even inside a DNS lookup); only
+# PNG, JPEG or WebP whose header says at most MAX_SIDE × MAX_SIDE pixels.
+# The file lands in $XDG_RUNTIME_DIR/omarchy-buddy/covers (700, files 600),
+# whole or not at all; the newest KEEP stay. Always exit 0.
+
+import hashlib
+import os
+import struct
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+import buddy  # noqa: E402
+
+MAX_BYTES = 4 * 2**20   # a cover is some 100 KB; more is broken or hostile
+# For the whole answer, redirects included; tests/cover-test.py may only shorten it.
+try:
+    SECONDS = max(0.5, min(10.0, float(os.environ.get("OMARCHY_BUDDY_COVER_SECONDS") or 10)))
+except ValueError:
+    SECONDS = 10.0
+READ_SECONDS = min(5.0, SECONDS)  # for each read
+MAX_REDIRECTS = 3
+MAX_SIDE = 4096         # pixels per side, before Qt's decoder sees the file
+KEEP = 32               # covers kept (Covers.qml remembers fewer)
+COVERS = os.path.join(buddy.RUN_DIR, "covers")
+
+
+def allowed(url):
+    """https with a host and without user:password@."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        return u.scheme == "https" and bool(u.hostname) and u.username is None and u.password is None and u.port != 0
+    except ValueError:
+        return False
+
+
+class Redirect(urllib.request.HTTPRedirectHandler):
+    followed = 0  # urllib's own limit counts distinct addresses only
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()  # its body is never read (buddy.urlopen, #230)
+        self.followed += 1
+        if self.followed > MAX_REDIRECTS or not allowed(newurl):
+            raise urllib.error.HTTPError(newurl, code, "too many redirects or not https", headers, None)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url, deadline):
+    """The answer's bytes, or None when it is larger than MAX_BYTES or late."""
+    req = urllib.request.Request(url, headers={"User-Agent": "omarchy-buddy", "Accept": "image/png, image/jpeg, image/webp"})
+    with urllib.request.build_opener(Redirect).open(req, timeout=READ_SECONDS) as r:
+        if not allowed(r.geturl()):
+            return None
+        data = b""
+        while len(data) <= MAX_BYTES:
+            if time.monotonic() > deadline:
+                return None
+            chunk = r.read1(64 * 1024)
+            if not chunk:
+                return data
+            data += chunk
+    return None
+
+
+def jpeg_size(data):
+    i = 2
+    while i + 9 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:  # fill byte
+            i += 1
+            continue
+        if marker in (0x01, *range(0xD0, 0xD8)):  # no length
+            i += 2
+            continue
+        length = struct.unpack(">H", data[i + 2:i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):  # a start of frame
+            h, w = struct.unpack(">HH", data[i + 5:i + 9])
+            return w, h
+        if length < 2:
+            return None
+        i += 2 + length
+    return None
+
+
+def image_kind(data):
+    """("png" | "jpg" | "webp", width, height) from the header, or None."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
+        w, h = struct.unpack(">II", data[16:24])
+        return "png", w, h
+    if data[:3] == b"\xff\xd8\xff":
+        size = jpeg_size(data)
+        return ("jpg",) + size if size else None
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+        chunk = data[12:16]
+        if chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            w, h = struct.unpack("<HH", data[26:30])
+            return "webp", w & 0x3FFF, h & 0x3FFF
+        if chunk == b"VP8L" and data[20] == 0x2F:
+            b = int.from_bytes(data[21:25], "little")
+            return "webp", (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+        if chunk == b"VP8X":
+            return "webp", int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+    return None
+
+
+def usable(data):
+    kind = image_kind(data or b"")
+    return kind if kind and 0 < kind[1] <= MAX_SIDE and 0 < kind[2] <= MAX_SIDE else None
+
+
+def prune():
+    files = sorted((e for e in os.scandir(COVERS) if e.is_file(follow_symlinks=False)), key=lambda e: e.stat().st_mtime, reverse=True)
+    for e in files[KEEP:]:
+        os.unlink(e.path)
+
+
+def cover(url):
+    """The cover's file, fetched or kept from before, or ""."""
+    if not allowed(url):
+        return ""
+    buddy.private_dir(buddy.RUN_DIR)
+    buddy.private_dir(COVERS)
+    name = os.path.join(COVERS, hashlib.sha256(url.encode()).hexdigest()[:32])
+    for ext in ("png", "jpg", "webp"):
+        if os.path.isfile(name + "." + ext) and not os.path.islink(name + "." + ext):
+            os.utime(name + "." + ext)
+            return name + "." + ext
+    data = fetch(url, time.monotonic() + SECONDS)
+    kind = usable(data)
+    if not kind:
+        return ""
+    path = name + "." + kind[0]
+    part = path + ".part"
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(part, path)
+    prune()
+    return path
+
+
+def main():
+    # The watchdog: a lookup or connect that hangs ends here too, with no output.
+    threading.Timer(SECONDS + 2, os._exit, (0,)).start()
+    try:
+        path = cover(sys.stdin.read(8192).strip())
+    except Exception:  # offline, refused, a broken answer: no cover
+        path = ""
+    if path:
+        print("file://" + urllib.parse.quote(path))
+    sys.stdout.flush()
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()

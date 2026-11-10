@@ -243,10 +243,24 @@ function toastDuration(note) {
 function titleOf(note) { return note.summary || note.body || senderOf(note) }
 function textOf(note) { return note.summary ? note.body : "" }
 
+// A pop-up shows three lines at most; its title and text are cut here so
+// that no sender can make a waiting or held-back pop-up arbitrarily large
+// (the history keeps the full text).
+var maxText = 2000
+function clipText(text) {
+  text = String(text || "")
+  return text.length > maxText ? text.slice(0, maxText - 1) + "…" : text
+}
+// A news item or pop-up with its title and body cut; the same object when nothing needs cutting.
+function clipped(item) {
+  if (String(item.title || "").length <= maxText && String(item.body || "").length <= maxText) return item
+  return Object.assign({}, item, { title: clipText(item.title), body: clipText(item.body) })
+}
+
 function noteToast(note, count) {
   var critical = note.urgency === 2
   return { note: true, source: "app", key: note.key, group: note.group, count: count || 1,
-           app: note.app, site: note.site || "", title: titleOf(note), body: textOf(note), textTitle: !note.summary, time: note.time,
+           app: note.app, site: note.site || "", title: clipText(titleOf(note)), body: clipText(textOf(note)), textTitle: !note.summary, time: note.time,
            level: critical ? "error" : "info", sticky: critical || note.kind === "event", media: note.media, ephemeral: note.ephemeral,
            duration: toastDuration(note),
            icon: note.icon, image: note.image, glyph: note.glyph, exec: note.exec, execActions: note.execActions, kind: note.kind,

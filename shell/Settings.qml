@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "theme"
 import "SettingsLogic.js" as SettingsLogic
+import "HelperLogic.js" as HelperLogic
 
 // The user's settings in ~/.config/omarchy-buddy/config.json (what they mean:
 // SettingsLogic.js). The file is watched, so a change by hand works at
@@ -27,6 +28,7 @@ Scope {
   property bool ready: false      // the folder and the file exist
   property bool fresh: false      // the file is empty: fill it once ui.json is read
   property bool loaded: false     // read once: the language is known (#192's pop-ups)
+  property bool held: false       // the values are a test's (Probe.testSettings): never written
 
   function apply(text) {
     var r = SettingsLogic.parse(text)
@@ -53,8 +55,8 @@ Scope {
   function setLongCommands(on) {
     set("longCommands", on)
     commands = { note: "", line: "" }
-    commandsSetup.command = [setup, "--commands", on ? "on" : "off"]
-    commandsSetup.running = true
+    commandsSetup.argv = [setup, "--commands", on ? "on" : "off"]
+    commandsSetup.request()
   }
 
   // "Omarchy-Wetter ersetzen" (#184): the setup takes Omarchy's weather out
@@ -67,33 +69,35 @@ Scope {
   function setWeather(on) {
     set("weather", on)
     weatherNote = ""
-    weatherSetup.command = [setup, "--weather", on ? "on" : "off"]
-    weatherSetup.running = true
+    weatherSetup.argv = [setup, "--weather", on ? "on" : "off"]
+    weatherSetup.request()
   }
   function checkBar(arrange) {
-    if (barSetup.running) return
-    barSetup.command = [setup, "--bar"].concat(arrange === undefined ? [] : [arrange ? "on" : "off"])
-    barSetup.running = true
+    // A plain check while one runs is not needed; a click runs after it.
+    if (barSetup.active && arrange === undefined) return
+    barSetup.argv = [setup, "--bar"].concat(arrange === undefined ? [] : [arrange ? "on" : "off"])
+    barSetup.request()
   }
 
   // The agents (#158): the installed ones (the setup knows their folders),
   // checked when the page opens. A switch writes agents.NAME to config.json,
-  // then the setup takes that agent's hooks in or out, one switch after the other.
+  // then the setup takes that agent's hooks in or out, one switch after the
+  // other; switched again while it waits, only the last state is done.
   property string agentsInstalled: ""
   property string agentsNote: ""  // what the setup said when an agent's file stopped it
   property var agentQueue: []
-  function checkAgents() { agentsList.running = true }
+  function checkAgents() { agentsList.start() }
   function setAgent(agent, on) {
     values = SettingsLogic.withAgent(values, agent, on); save()
     agentsNote = ""
-    agentQueue = agentQueue.concat([[agent, on ? "on" : "off"]])
+    agentQueue = agentQueue.filter(function(a) { return a[0] !== agent }).concat([[agent, on ? "on" : "off"]])
     nextAgent()
   }
   function nextAgent() {
-    if (agentSetup.running || agentQueue.length === 0) return
-    agentSetup.command = [setup, "--agent"].concat(agentQueue[0])
+    if (agentSetup.active || agentQueue.length === 0) return
+    agentSetup.argv = [setup, "--agent"].concat(agentQueue[0])
     agentQueue = agentQueue.slice(1)
-    agentSetup.running = true
+    agentSetup.start()
   }
 
   // The feed's own sources (Neuigkeiten): the feed reads config.json on
@@ -111,29 +115,29 @@ Scope {
     var url = values.feed.kuma, address = SettingsLogic.kumaAddress(url)
     kumaCheck = address === "ok" ? "checking" : address
     if (address !== "ok") return
-    if (kumaTest.running) { kumaTest.again = true; return }
+    if (kumaTest.active) { kumaTest.again = true; return }
     kumaTest.url = url
-    kumaTest.running = true
+    kumaTest.start()
   }
   function checkSources() {
     checkKuma()
-    ghTest.running = true
+    ghTest.start()
   }
 
   // The update watcher's git clones (#224): the feed lists them (no network),
   // checked when the page opens; a switch writes gitRepos["~/path"] = false.
   property string gitList: ""
-  function checkGit() { if (!gitListing.running) gitListing.running = true }
+  function checkGit() { gitListing.start() }
   function setGitRepo(path, on) { values = SettingsLogic.withGitRepo(values, path, on); save() }
 
   function setAppRule(name, rule) { values = SettingsLogic.withAppRule(values, name, rule); save() }
 
   function save() {
-    if (broken) backup.running = true
+    if (broken) backup.start()
     else write()
   }
 
-  function write() { configFile.setText(SettingsLogic.serialize(values, extra)) }
+  function write() { if (!held) configFile.setText(SettingsLogic.serialize(values, extra)) }
 
   function edit() { Quickshell.execDetached([app.omarchyBin + "omarchy-launch-editor", file]) }
 
@@ -143,10 +147,10 @@ Scope {
 
   // Omarchy's monospace fonts for the page's font choice (#182).
   property string fontList: ""
-  Process {
-    running: true
-    command: [settings.app.omarchyBin + "omarchy-font-list"]
-    stdout: StdioCollector { onStreamFinished: settings.fontList = text }
+  Helper {
+    argv: [settings.app.omarchyBin + "omarchy-font-list"]
+    Component.onCompleted: start()
+    onDone: (result, output) => { if (result === "ok") settings.fontList = output }
   }
 
   Connections {
@@ -156,66 +160,75 @@ Scope {
 
   // The folder only for the user, like the state folder; an empty file so the
   // watcher has something to watch.
-  Process {
-    running: true
-    command: ["sh", "-c", "umask 077; mkdir -p \"$1\" && { [ -e \"$1/config.json\" ] || : > \"$1/config.json\"; }", "sh", settings.dir]
-    onExited: settings.ready = true
+  Helper {
+    argv: ["sh", "-c", "umask 077; mkdir -p \"$1\" && { [ -e \"$1/config.json\" ] || : > \"$1/config.json\"; }", "sh", settings.dir]
+    Component.onCompleted: start()
+    onDone: settings.ready = true
   }
-  Process {
+  // The background helpers (Helper.qml, #255): each ends after its deadline,
+  // and one that did not start, ran too long or said too much leaves a line
+  // on the page (HelperLogic.said); the switch tries again.
+  Helper {
     id: commandsSetup
-    stdout: StdioCollector { onStreamFinished: settings.commands = SettingsLogic.commandsReply(text) }
+    seconds: 60
+    onDone: (result, output) => settings.commands = SettingsLogic.commandsReply(HelperLogic.said(result, output, Theme.lang))
   }
-  Process {
+  Helper {
     id: weatherSetup
-    stdout: StdioCollector { onStreamFinished: settings.weatherNote = text.trim() }
+    seconds: 60
+    onDone: (result, output) => settings.weatherNote = HelperLogic.said(result, output, Theme.lang).trim()
   }
-  Process {
+  Helper {
     id: barSetup
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var r = SettingsLogic.barReply(text)
-        settings.barOrder = r.state
-        settings.barNote = r.note
-      }
+    seconds: 60
+    onDone: (result, output) => {
+      var r = SettingsLogic.barReply(HelperLogic.said(result, output, Theme.lang))
+      settings.barOrder = r.state
+      settings.barNote = r.note
     }
   }
-  Process {
+  Helper {
     id: agentsList
-    command: [settings.setup, "--agents"]
-    stdout: StdioCollector { onStreamFinished: settings.agentsInstalled = text }
+    argv: [settings.setup, "--agents"]
+    onDone: (result, output) => { if (result === "ok") settings.agentsInstalled = output }
   }
-  Process {
+  Helper {
     id: agentSetup
-    onExited: settings.nextAgent()
-    stdout: StdioCollector { onStreamFinished: if (text.trim() !== "") settings.agentsNote = text.trim() }
+    seconds: 60
+    onDone: (result, output) => {
+      var note = HelperLogic.said(result, output, Theme.lang).trim()
+      if (note !== "") settings.agentsNote = note
+      settings.nextAgent()
+    }
   }
-  Process {
+  Helper {
     id: kumaTest
     property string url
     property bool again: false  // the address changed while it ran
-    command: [settings.app.feeder, "--test-kuma", url]
-    onExited: if (again) { again = false; settings.checkKuma() }
-    stdout: StdioCollector {
-      onStreamFinished: if (!kumaTest.again && kumaTest.url === settings.values.feed.kuma)
-        settings.kumaCheck = text.trim() === "ok" ? "ok" : "unreachable"
+    argv: [settings.app.feeder, "--test-kuma", url]
+    onDone: (result, output) => {
+      if (again) { again = false; settings.checkKuma() }
+      else if (url === settings.values.feed.kuma)
+        settings.kumaCheck = result === "ok" && output.trim() === "ok" ? "ok" : "unreachable"
     }
   }
-  Process {
+  Helper {
     id: gitListing
-    command: [settings.app.feeder, "--git-list"]
-    stdout: StdioCollector { onStreamFinished: settings.gitList = text }
+    argv: [settings.app.feeder, "--git-list"]
+    onDone: (result, output) => { if (result === "ok") settings.gitList = output }
   }
   // Only whether gh has a token (no network, nothing printed): signed out
   // or no gh, the page says how to sign in.
-  Process {
+  Helper {
     id: ghTest
-    command: ["sh", "-c", "gh auth token >/dev/null 2>&1"]
-    onExited: (code) => settings.ghSignedIn = code === 0
+    argv: ["sh", "-c", "gh auth token >/dev/null 2>&1"]
+    onDone: result => settings.ghSignedIn = result === "ok"
   }
-  Process {
+  // Without the copy the broken file is not overwritten: the next save tries again.
+  Helper {
     id: backup
-    command: ["cp", "-p", settings.file, settings.file + ".broken"]
-    onExited: { settings.broken = false; settings.write() }
+    argv: ["cp", "-p", settings.file, settings.file + ".broken"]
+    onDone: result => { if (result === "ok") { settings.broken = false; settings.write() } }
   }
 
   FileView {

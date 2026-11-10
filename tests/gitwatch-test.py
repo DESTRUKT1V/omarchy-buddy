@@ -38,7 +38,11 @@ own = {"destrukt1v"}
 cases = {
     "https://github.com/ohmyzsh/ohmyzsh.git": True,
     "https://github.com/meviusisback/omarchy-hw-monitor": True,
-    "https://token:x@gitlab.com/someone/tool.git": True,
+    "https://token:x@gitlab.com/someone/tool.git": False,       # credentials end up in argv (#257)
+    "https://ghp_token@github.com/someone/tool.git": False,
+    "https://:token@github.com/someone/tool.git": False,
+    "https://github.com/someone/tool.git?private_token=x": False,
+    "https::https://token@github.com/someone/tool.git": False,
     "https://github.com/DESTRUKT1V/omarchy-buddy.git": False,   # the own GitHub account
     "forgejo:alice/dotfiles.git": False,                        # ssh alias (own Forgejo)
     "git@github.com:someone/tool.git": False,                   # ssh: a repo one pushes to
@@ -155,6 +159,98 @@ gw.offline(top, "git", False)
 check("Fremde .git/config im Submodul: git status bleibt draußen", "~/top" in gw.find(HOME, me) and ran() == [], ran())
 for rel in ("fsmon", "filt", "ext", "insteadof", "inc", "top", "omzlike"):
     shutil.rmtree(os.path.join(HOME, rel))
+
+def terminal(fn):
+    """fn()'s result and everything it (and the git it starts) wrote to stdout."""
+    with tempfile.TemporaryFile() as f:
+        sys.stdout.flush()
+        saved = os.dup(1)
+        os.dup2(f.fileno(), 1)
+        try:
+            result = fn()
+        finally:
+            sys.stdout.flush()
+            os.dup2(saved, 1)
+            os.close(saved)
+        f.seek(0)
+        return result, f.read()
+
+
+# 2c. Credentials in a remote's URL (#257): git would hand the full URL to git-remote-https as an
+# argument, readable in the process list. A fake helper records the argv of every one started.
+helpers = os.path.join(HOME, "exec-path")
+os.makedirs(helpers)
+argv = os.path.join(HOME, "helper-argv")
+with open(os.path.join(helpers, "git-remote-https"), "w") as f:
+    f.write(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{argv}"\nexit 1\n')
+os.chmod(os.path.join(helpers, "git-remote-https"), 0o755)
+with open(os.path.join(helpers, "omarchy-plugin-update"), "w") as f:  # never the real one, even on a regression
+    f.write('#!/bin/sh\necho "$@" > "$HOME/plugin-update-args"\n')
+os.chmod(os.path.join(helpers, "omarchy-plugin-update"), 0o755)
+saved_env = dict(gw.ENV)
+gw.ENV.update(GIT_EXEC_PATH=helpers, PATH=helpers + ":" + gw.ENV["PATH"])
+
+
+def started():
+    try:
+        with open(argv) as f:
+            lines = f.read().splitlines()
+        os.remove(argv)
+        return lines
+    except FileNotFoundError:
+        return []
+
+
+def follows(rel, remote, url):
+    path = hostile(rel)
+    if remote != "origin":
+        git(path, "remote", "add", remote, url)
+    else:
+        git(path, "remote", "set-url", "origin", url)
+    git(path, "config", "branch.main.remote", remote)
+    git(path, "config", "branch.main.merge", "refs/heads/main")
+    return path
+
+
+pub = follows("pub", "origin", PUB.format("pub"))
+check("Zugangsdaten (#257): öffentlicher Remote ohne Zugangsdaten wird weiter gefragt (Helfer sieht die URL)",
+      "~/pub" in gw.find(HOME, me) and gw.check(pub, "git", timeout=5) is None
+      and started() == ["origin " + PUB.format("pub")])
+tok = follows("tok", "origin", "https://user:geheim@github.com/someone/tok.git")
+check("Zugangsdaten: origin mit Benutzerinfo nicht beobachtet", "~/tok" not in gw.find(HOME, me))
+up_tok = follows("uptok", "upstream", "https://geheim@github.com/someone/uptok.git")
+check("Zugangsdaten: gewählter Upstream (nicht origin) mit Token: nicht gefragt, kein Helfer",
+      "~/uptok" in gw.find(HOME, me) and gw.check(up_tok, "git", timeout=5) == "detached"
+      and gw.offline(up_tok, "git", False) == "detached" and started() == [])
+multi = follows("multi", "origin", PUB.format("multi"))
+git(multi, "config", "--add", "remote.origin.url", "https://geheim@github.com/someone/multi.git")
+check("Zugangsdaten: zweite URL desselben Remotes zählt auch", "~/multi" not in gw.find(HOME, me)
+      and gw.check(multi, "plugin", timeout=5) == "detached" and started() == [])
+gw.ENV.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="url.https://geheim@github.com/.insteadOf",
+              GIT_CONFIG_VALUE_0="https://github.com/")  # as a ~/.gitconfig would set it
+check("Zugangsdaten: Token per insteadOf aus der globalen Config: nicht beobachtet, nicht gefragt",
+      "~/pub" not in gw.find(HOME, me) and gw.check(pub, "git", timeout=5) == "detached"
+      and gw.check(pub, "plugin", timeout=5) == "detached" and started() == [])
+for kind in ("git", "plugin", "omz"):
+    code, shown = terminal(lambda: gw.update("~/pub", kind, ask=lambda q: True))
+    check(f"Zugangsdaten: Aktualisieren ({kind}) per insteadOf: bleibt, kein Helfer, kein Updater",
+          code == 0 and started() == [] and not os.path.exists(os.path.join(HOME, "plugin-update-args")), shown)
+for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+    gw.ENV.pop(k)
+for kind in ("git", "zsh"):
+    code, shown = terminal(lambda: gw.update("~/uptok", kind, ask=lambda q: True))
+    check(f"Zugangsdaten: Aktualisieren ({kind}) mit Token im Upstream: kein fetch", code == 0 and started() == [], shown)
+omz = follows("omztok", "origin", PUB.format("omztok"))
+git(omz, "remote", "add", "fork", "https://geheim@github.com/someone/ohmyzsh.git")
+git(omz, "config", "oh-my-zsh.remote", "fork")
+code, shown = terminal(lambda: gw.update("~/omztok", "omz", ask=lambda q: True))
+check("Zugangsdaten: oh-my-zsh mit Token in dem Remote, den upgrade.sh nimmt: nicht gestartet",
+      code == 0 and started() == [], shown)
+gw.ENV.clear()
+gw.ENV.update(saved_env)
+for rel in ("pub", "tok", "uptok", "multi", "omztok"):
+    shutil.rmtree(os.path.join(HOME, rel))
+
 check("git spricht nur https (kein ext::, file://, ssh)", gw.ENV["GIT_ALLOW_PROTOCOL"] == "https"
       and gw.remote_sha(os.path.join(HOME, "someapp"), os.path.join(HOME, "someapp"), "refs/heads/main") is None)
 check("Namen fürs Terminal ohne Steuerzeichen", gw.name("~/a\x1b]52;c;eA==\x07b") == "a?]52;c;eA==?b")
@@ -217,22 +313,6 @@ git(up, "push", "-q")
 with open(os.path.join(clone, ".git/hooks/post-merge"), "w") as f:
     f.write(f"#!/bin/sh\ntouch {HOME}/ran-hook\n")
 os.chmod(os.path.join(clone, ".git/hooks/post-merge"), 0o755)
-
-
-def terminal(fn):
-    """fn()'s result and everything it (and the git it starts) wrote to stdout."""
-    with tempfile.TemporaryFile() as f:
-        sys.stdout.flush()
-        saved = os.dup(1)
-        os.dup2(f.fileno(), 1)
-        try:
-            result = fn()
-        finally:
-            sys.stdout.flush()
-            os.dup2(saved, 1)
-            os.close(saved)
-        f.seek(0)
-        return result, f.read()
 
 
 code, shown = terminal(lambda: gw.update("~/clone", "zsh", ask=lambda q: True))
@@ -360,10 +440,10 @@ os.remove(feed.STATE)
 check("--git-list: ohne feed.json kein neuer Stand", "build" not in feed.git_list())
 
 up_ = feed.updates
-check("Schritte: Git-Klone vor omarchy-update, nach Orca",
-      up_.steps({"pacman": 1}, False, lambda p: True, "1.4.253", {"~/x": "git"})
-      == [["omarchy-buddy-update", "--orca"], ["omarchy-buddy-update", "--git"], ["omarchy-update"]])
-check("Schritte: nur Git-Klone", up_.steps({}, False, lambda p: True, "", {"~/x": "plugin"}) == [["omarchy-buddy-update", "--git"]])
+check("Schritte: Git-Klone vor omarchy-update",
+      up_.steps({"pacman": 1}, False, lambda p: True, {"~/x": "git"})
+      == [["omarchy-buddy-update", "--git"], ["omarchy-update"]])
+check("Schritte: nur Git-Klone", up_.steps({}, False, lambda p: True, {"~/x": "plugin"}) == [["omarchy-buddy-update", "--git"]])
 
 shutil.rmtree(HOME, ignore_errors=True)
 done()

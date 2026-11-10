@@ -5,7 +5,7 @@
 # and the path, the text is cut and cleaned, old files go, and without a
 # default agent nothing starts. HOME is a sandbox.
 # Aufruf: tests/analyze-test.py
-import json, os, shutil, stat, subprocess, sys, tempfile
+import json, os, shutil, stat, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 from testing import check, done, sandbox_env  # noqa: E402
 
@@ -16,7 +16,9 @@ OUT = os.path.join(HOME, "cmdline")
 AI_DIR = os.path.join(HOME, "run", "omarchy-buddy", "ai")
 os.makedirs(FAKE)
 # The stand-in writes its own /proc cmdline: what another account could read.
-for name, body in {"omarchy-default-agent": 'cat "$AGENT"', "omarchy-agent": 'cat /proc/$$/cmdline > "$OUT"'}.items():
+# It runs on after analyze ended (#255): written whole, then its session id; SLOW keeps it running.
+agent_body = 'cat /proc/$$/cmdline > "$OUT.tmp"; ps -o sid= -p $$ > "$OUT.sid"; mv "$OUT.tmp" "$OUT"; [ -z "$SLOW" ] || sleep "$SLOW"'
+for name, body in {"omarchy-default-agent": 'cat "$AGENT"', "omarchy-agent": agent_body}.items():
     with open(os.path.join(FAKE, name), "w") as f:
         f.write("#!/bin/sh\n" + body + "\n")
     os.chmod(os.path.join(FAKE, name), 0o755)
@@ -26,11 +28,15 @@ with open(AGENT, "w") as f:
 ENV = sandbox_env(HOME, PATH=FAKE + ":" + os.environ["PATH"], OUT=OUT, AGENT=AGENT)
 
 
-def run(data):
+def run(data, env=ENV):
     if os.path.exists(OUT):
         os.remove(OUT)
     p = subprocess.run([ANALYZE], input=data if isinstance(data, str) else json.dumps(data),
-                       env=ENV, capture_output=True, text=True, timeout=10)
+                       env=env, capture_output=True, text=True, timeout=10)
+    for _ in range(50):  # the agent was let go: wait for its file
+        if p.returncode != 0 or os.path.exists(OUT):
+            break
+        time.sleep(0.1)
     try:
         with open(OUT, "rb") as f:
             argv = f.read().decode().split("\0")
@@ -73,6 +79,15 @@ check("Text auf 2000 Zeichen gekürzt", len(text) == 2000 and text.endswith("…
 for i in range(6):
     run({"sender": "s", "title": f"t{i}", "text": ""})
 check("nur die letzten fünf Dateien bleiben", len(os.listdir(AI_DIR)) == 5, os.listdir(AI_DIR))
+
+# #255: analyze is a finite helper; the agent runs on in its own session, holding no pipe of ours.
+start = time.monotonic()
+code, argv = run({"sender": "s", "title": "t", "text": ""}, dict(ENV, SLOW="4"))
+took = time.monotonic() - start
+with open(OUT + ".sid") as f:
+    sid = int(f.read().strip())
+check("endet sofort, der Agent läuft in eigener Sitzung weiter",
+      code == 0 and argv and took < 3 and sid != os.getsid(0), (code, took, sid, os.getsid(0)))
 
 code, argv = run("kein json")
 check("kaputte Eingabe: Fehler, kein Agent", code != 0 and argv is None, code)

@@ -10,6 +10,10 @@
 # gets a fixed task with the file's path; it reads the notification as quoted
 # data. omarchy-agent starts the agent without asking for permissions, so a
 # notification's text could still try to steer it (README, Security).
+#
+# The agent goes off on its own (own session, no pipes back) and this ends at
+# once: the island runs it as a finite helper with a deadline (#255), the
+# agent's terminal stays as long as the user wants.
 
 import json
 import os
@@ -76,7 +80,8 @@ def main():
             and subprocess.run(["omarchy-default-agent"], capture_output=True, text=True).stdout.strip()):
         sys.exit("omarchy-buddy-analyze: no default agent (omarchy default agent NAME)")
     argv = command(save(note_file(data)))
-    os.execvp(argv[0], argv)
+    subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 if __name__ == "__main__":

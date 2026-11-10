@@ -136,10 +136,11 @@ Scope {
     printErrors: false
     onFileChanged: reload()
   }
-  Process {
-    running: true
-    command: ["test", "-x", store.app.omarchyBin + "omarchy-menu"]
-    onExited: (code) => store.menuPresent = code === 0
+  Helper {
+    argv: ["test", "-x", store.app.omarchyBin + "omarchy-menu"]
+    seconds: 5
+    Component.onCompleted: start()
+    onDone: result => store.menuPresent = result === "ok"
   }
 
   function selection(ask) { return answers[ask.key] || ({}) }

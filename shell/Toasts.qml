@@ -34,7 +34,12 @@ Scope {
 
   function enqueue(items) {
     if (!items.length) return
-    if (app.paused || app.opened) { heldBack = heldBack.concat(items); return }
+    if (app.paused || app.opened) {
+      var held = heldBack.concat(items)
+      heldBack = ToastLogic.hold(heldBack, items, Date.now() / 1000, Theme.lang)
+      releaseFolded(held, heldBack)
+      return
+    }
     var all = queue.concat(items)
     queue = ToastLogic.fold(queue, items, Date.now() / 1000, Theme.lang)
     releaseFolded(all, queue)

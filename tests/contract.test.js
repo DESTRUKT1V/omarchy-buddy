@@ -70,6 +70,9 @@ const members = [
   ["Services/Mpris", "Quickshell.Services.Mpris/MprisPlayer",
    ["identity", "desktopEntry", "trackArtUrl", "trackTitle", "trackArtist"]],
   ["", "Quickshell/ShellScreen", ["physicalPixelDensity", "devicePixelRatio"]],
+  // Helper.qml (#255): a start failure shows only as runningChanged.
+  ["Io", "Quickshell.Io/Process", ["running", "command", "stdinEnabled", "stdout", "started", "exited", "runningChanged", "signal", "write"]],
+  ["Io", "Quickshell.Io/SplitParser", ["splitMarker"]],
 ]
 
 for (const [dir, name, wanted] of members) {

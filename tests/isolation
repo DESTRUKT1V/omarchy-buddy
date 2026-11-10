@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# The test IPC's boundary (#256), end to end: this checkout's island in its
+# own Quickshell (HOME, every XDG folder and the D-Bus session its own, like
+# tests/looks), real Claude requests through the real hook and real
+# notifications, and what tests/live and tests/gallery may do with them.
+# Between the test's look at the island and its click, something real
+# arrives or you open the view: the run stops, nothing real is clicked,
+# dismissed or answered; outside a run, clicks still reach only the test
+# session or record they name, also in the open view.
+#
+#   flock /tmp/omarchy-buddy-looks.lock tests/isolation
+#
+# Covers the screen with the island over the wallpaper for half a minute
+# (hence the looks lock).
+# Exit 0: all good, 1: something failed, 2: the island did not start.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+real_run=$XDG_RUNTIME_DIR
+box=$(mktemp -d)
+qs=$box/qs
+pid="" dbus="" waiting=()
+cleanup() {
+  trap - EXIT INT TERM
+  for w in "${waiting[@]}"; do kill "$w" 2>/dev/null; done
+  [[ -n $pid ]] && kill "$pid" 2>/dev/null
+  [[ -n $dbus ]] && kill "$dbus" 2>/dev/null
+  wait 2>/dev/null
+  rm -rf "$box"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$box/home/.config/omarchy-buddy" "$box/home/.config/omarchy" "$box/home/.local/share" \
+  "$box/home/.local/state/omarchy-buddy" "$box/home/.cache" "$box/run" "$qs"
+chmod 700 "$box/run"
+ln -s "$real_run/$WAYLAND_DISPLAY" "$box/run/$WAYLAND_DISPLAY"
+ln -s "$real_run/hypr" "$box/run/hypr"
+ln -s "$HOME/.local/state/omarchy" "$box/home/.local/state/omarchy"  # the theme, read only
+ln -s "${OMARCHY_PATH:-/usr/share/omarchy}/shell/Commons" "$qs/Commons"
+ln -s "${OMARCHY_PATH:-/usr/share/omarchy}/shell/Ui" "$qs/Ui"
+ln -s "$PWD/shell" "$qs/buddy"
+ln -s "$PWD/bin" "$qs/bin"
+cp tests/looks.qml "$qs/shell.qml"
+config=$box/home/.config/omarchy-buddy/config.json
+echo '{"language": "de", "zoom": 0, "weather": false}' >"$config"
+echo '{"version": 1, "disabledPlugins": ["omarchy.notifications"]}' >"$box/home/.config/omarchy/shell.json"
+echo '{}' >"$box/home/.local/state/omarchy-buddy/setup.json"  # set up: no greeting
+
+# tests/looks.qml starts the island once its stand-in desk shows the wallpaper.
+export LOOKS_WALLPAPER
+LOOKS_WALLPAPER=$(readlink -f "$HOME/.local/state/omarchy/current/background")
+export HOME=$box/home XDG_CONFIG_HOME=$box/home/.config XDG_DATA_HOME=$box/home/.local/share \
+  XDG_STATE_HOME=$box/home/.local/state XDG_CACHE_HOME=$box/home/.cache XDG_RUNTIME_DIR=$box/run
+cat >"$box/bus.conf" <<EOF
+<busconfig><type>session</type><listen>unix:tmpdir=$box</listen>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>
+EOF
+{ read -r DBUS_SESSION_BUS_ADDRESS; read -r dbus; } < <(dbus-daemon --config-file="$box/bus.conf" --fork --print-address=1 --print-pid=1)
+export DBUS_SESSION_BUS_ADDRESS OMARCHY_BUDDY_LOOKS=1
+unset "${!ORCA_@}"
+
+quickshell -p "$qs" >"$box/log" 2>&1 &
+pid=$!
+
+ipc() { quickshell ipc -p "$qs" call "$@" 2>/dev/null; }
+probe() { ipc omarchy-buddy.test "$@"; }
+st() { probe state | jq -r "$1"; }
+for _ in $(seq 50); do [[ $(probe ping) == ok ]] && break; sleep 0.2; done
+if [[ $(probe ping) != ok ]]; then
+  echo "Die Insel startet nicht:" >&2; tail -20 "$box/log" >&2; exit 2
+fi
+
+fails=0
+check() {  # name condition-result(0/1) detail
+  if (($2 == 0)); then echo "✓ $1"; else echo "✗ $1: $3"; fails=$((fails + 1)); fi
+}
+until_true() {  # jq condition on the state, seconds
+  for _ in $(seq $((${2:-4} * 10))); do [[ $(st "$1") == true ]] && return 0; sleep 0.1; done
+  return 1
+}
+
+# A request through the real hook, waiting in the background for its answer (into $box/answer-ID).
+ask() {  # session-id
+  jq -nc --arg s "$1" '{session_id: $s, cwd: "/tmp/insel", hook_event_name: "PermissionRequest", tool_name: "Bash",
+                        tool_input: {command: "rm -rf build/", description: "Isolation"}}' |
+    bin/omarchy-buddy-hook >"$box/answer-$1" 2>/dev/null &
+  waiting+=($!)
+}
+answered() { jq -r '.hookSpecificOutput.decision.behavior // ""' "$box/answer-$1" 2>/dev/null; }
+end() {  # session-id
+  bin/omarchy-buddy-hook --decide "$1" focus >/dev/null 2>&1
+  jq -nc --arg s "$1" '{session_id: $s, cwd: "/tmp/insel", hook_event_name: "SessionEnd"}' | bin/omarchy-buddy-hook >/dev/null 2>&1
+}
+# testClick, waiting up to 3 s for the button (a view just opened is still being built); its last answer.
+click() {  # label owner
+  local r
+  for _ in $(seq 30); do r=$(probe testClick "$1" "$2"); [[ $r == none ]] || break; sleep 0.1; done
+  echo "$r"
+}
+note() {  # app summary [actions]
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- "$1" 0 "" "$2" "" "${3:-[]}" "{'urgency': <byte 1>}" -1 >/dev/null
+}
+rest() {  # the island back at rest: no requests, no pop-ups, view closed
+  probe testEnd >/dev/null; ipc omarchy-buddy close >/dev/null
+  ipc notifications dismissAll >/dev/null
+  until_true '.asks == 0 and .toast == null and (.queue | length) == 0 and (.opened | not)' 6
+}
+
+# 0. Undisturbed, the test acts on its own things, also in the view it opened.
+ask buddy-test-ok
+until_true '.ask.session == "buddy-test-ok"' 6
+check "ungestörter Lauf beginnt" "$([[ $(probe testBegin) == ok ]]; echo $?)" "testBegin"
+r=$(probe testOpen true)
+until_true '.opened' 2
+r=$r/$(click Erlauben buddy-test-ok)
+sleep 1.5
+check "eigene Ansicht, eigene Anfrage: beantwortet, kein Abbruch" \
+  "$([[ $r == ok/ok && $(answered buddy-test-ok) == allow && -z $(probe testInterrupted) ]]; echo $?)" \
+  "Antworten $r, Hook $(answered buddy-test-ok), Abbruch $(probe testInterrupted)"
+r=$(probe testOpen false)
+end buddy-test-ok
+note Buddy-Test "Eigenes Pop-up" "['ok', 'OK']"
+until_true '.toast.title == "Eigenes Pop-up"' 4
+r=$r/$(probe testOmarchy act "")
+check "eigenes Pop-up: act geht" "$([[ $r == ok/ok ]]; echo $?)" "Antworten $r"
+rest
+
+# 1. A real request arrives between the test's look and its click.
+ask buddy-test-iso
+until_true '.ask.session == "buddy-test-iso"' 6
+check "Lauf beginnt in Ruhe" "$([[ $(probe testBegin) == ok ]]; echo $?)" "testBegin"
+check "Test sieht seine eigene Anfrage" "$([[ $(st .ask.session) == buddy-test-iso ]]; echo $?)" "$(st .ask)"
+ask echt-1
+until_true '.asks == 2' 6
+r=$(probe testClick Erlauben buddy-test-iso)
+check "echte Anfrage kommt dazwischen: Klick abgewiesen" "$([[ $r == interrupted:ask ]]; echo $?)" "Antwort $r"
+check "… der Lauf bleibt gestoppt" "$([[ $(probe testInterrupted) == ask ]]; echo $?)" "$(probe testInterrupted)"
+r=$(probe testOpen true)
+check "… auch Öffnen abgewiesen" "$([[ $r == interrupted:ask ]]; echo $?)" "Antwort $r"
+sleep 1
+check "… keine der Anfragen beantwortet" "$([[ -z $(answered echt-1) && -z $(answered buddy-test-iso) ]]; echo $?)" \
+  "echt: $(answered echt-1), Test: $(answered buddy-test-iso)"
+
+# 2. Without a run, in the open view (both requests' buttons side by side):
+# only the named test session's "Erlauben".
+probe testEnd >/dev/null
+ipc omarchy-buddy open >/dev/null
+until_true '.opened' 2
+r=$(probe testClick Erlauben echt-1)
+check "offene Ansicht: echte Anfrage nie, auch wenn genannt" "$([[ $r == none ]]; echo $?)" "Antwort $r"
+r=$(click Erlauben buddy-test-iso)
+sleep 1.5
+check "offene Ansicht: nur die Testanfrage wird beantwortet" \
+  "$([[ $r == ok && $(answered buddy-test-iso) == allow && -z $(answered echt-1) ]]; echo $?)" \
+  "Antwort $r, Test: $(answered buddy-test-iso), echt: $(answered echt-1)"
+end buddy-test-iso; end echt-1
+rest
+
+# 3. You open the view between the test's look at its pop-up and its action.
+note Buddy-Test "Testmeldung" "['ok', 'OK']"
+until_true '.toast.title == "Testmeldung"' 4
+check "zweiter Lauf beginnt" "$([[ $(probe testBegin) == ok ]]; echo $?)" "testBegin"
+probe testSettings '{"language": "en", "zoom": 1.3}' >/dev/null
+before=$(cat "$config")
+ipc omarchy-buddy open >/dev/null  # you
+r=$(probe testOmarchy act "")
+check "Ansicht vom Nutzer geöffnet: act abgewiesen" "$([[ $r == interrupted:view ]]; echo $?)" "Antwort $r"
+r=$(probe testOpen false)
+check "… seine Ansicht bleibt offen" "$([[ $r == interrupted:view && $(st .opened) == true ]]; echo $?)" "Antwort $r"
+check "… Testeinstellungen sofort zurück, nichts geschrieben" \
+  "$([[ $(st .settings.language) == de && $(cat "$config") == "$before" ]]; echo $?)" "$(st .settings)"
+rest
+
+# 4. A real pop-up arrives while the test's own is on screen.
+note Buddy-Test "Testmeldung 2"
+until_true '.toast.title == "Testmeldung 2"' 4
+check "dritter Lauf beginnt" "$([[ $(probe testBegin) == ok ]]; echo $?)" "testBegin"
+note Beeper "Echte Nachricht"
+until_true '[.toast.title] + [.queue[].title] | index("Echte Nachricht") != null' 4
+r=$(probe testOmarchy dismissAll "")
+check "echtes Pop-up kommt dazwischen: dismissAll abgewiesen" "$([[ $r == interrupted:popup ]]; echo $?)" "Antwort $r"
+probe testEnd >/dev/null
+r=$(probe testOmarchy dismissAll "")
+check "ohne Lauf: dismissAll nur, wenn alles dem Test gehört" "$([[ $r == foreign ]]; echo $?)" "Antwort $r"
+probe testClear >/dev/null
+sleep 0.3
+check "Test räumt nur seine eigenen Pop-ups weg" "$([[ $(st '.toast.title') == "Echte Nachricht" ]]; echo $?)" "$(st .toast)"
+
+# 5. Something real arrives silently (Ruhemodus): only the history gets it.
+rest
+check "vierter Lauf beginnt" "$([[ $(probe testBegin) == ok ]]; echo $?)" "testBegin"
+ipc notifications setDnd on >/dev/null
+note Beeper "Leise echte Nachricht"
+until_true '[.notes[].summary] | index("Leise echte Nachricht") != null' 4
+r=$(probe testOpen true)
+check "leise echte Meldung kommt dazwischen: Lauf gestoppt" "$([[ $r == interrupted:popup ]]; echo $?)" "Antwort $r"
+ipc notifications setDnd off >/dev/null
+probe testEnd >/dev/null
+
+# 6. "alle löschen" never empties a history with real records in it.
+ipc omarchy-buddy open >/dev/null
+until_true '.opened' 2
+r=$(probe testClick "alle löschen" history)
+check "alle löschen mit echter Meldung im Verlauf abgewiesen" "$([[ $r == none && $(st .realNotes) -ge 1 ]]; echo $?)" \
+  "Antwort $r, echte $(st .realNotes)"
+
+problems=$(grep -hE '\s(WARN|ERROR|FATAL)\s' "$box"/run/quickshell/by-id/*/log.log | grep 'buddy/' | grep -v qmlscanner)
+check "kein QML-Fehler im Log" "$([[ -z $problems ]]; echo $?)" "$problems"
+
+echo
+if ((fails)); then echo "$fails Fehler"; exit 1; fi
+echo "alles gut"

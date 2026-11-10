@@ -80,12 +80,14 @@ var texts = {
 
     // pop-ups and news (ToastLogic)
     "toast.many": "{0} Meldungen",
+    "toast.critical": "{0} wichtige Meldungen",
     "toast.away": "Während du weg warst: ",
     "check.running": "prüft …",
     "check.idle": "jetzt prüfen",
     "check.none": "nichts Neues",
     "check.one": "1 neu",
     "check.many": "{0} neu",
+    "check.failed": "hat nicht geklappt",
 
     // a sender's buttons (NoteLogic), by their usual English names
     "action.reply": "Antworten",
@@ -167,6 +169,17 @@ var texts = {
     "settings.removeNow": "Deinstallieren",
     "settings.removeFailed": "Deinstallieren hat nicht geklappt",
     "settings.removeFailedBody": "Im Terminal: omarchy-buddy-setup --uninstall",
+    // finite helpers (HelperLogic, #255): on the settings page, and the pop-up; {0} the program
+    "helper.start": "Das Setup ließ sich nicht starten. Versuch es noch einmal.",
+    "helper.time": "Das Setup hat nicht rechtzeitig geantwortet und wurde beendet. Versuch es noch einmal.",
+    "helper.output": "Das Setup hat zu viel ausgegeben und wurde beendet. Versuch es noch einmal.",
+    "helper.failed": "Das Setup hat nicht geklappt. Versuch es noch einmal.",
+    "helper.title": "Das hat nicht geklappt",
+    "helper.body.start": "{0} ließ sich nicht starten. Versuch es noch einmal.",
+    "helper.body.time": "{0} hat zu lange gebraucht und wurde beendet. Versuch es noch einmal.",
+    "helper.body.output": "{0} hat zu viel ausgegeben und wurde beendet. Versuch es noch einmal.",
+    "helper.body.drop": "Gerade läuft zu viel auf einmal, {0} wurde nicht gestartet. Versuch es gleich noch einmal.",
+    "helper.body.failed": "{0} hat mit einem Fehler aufgehört. Versuch es noch einmal.",
     "zoom.percent": "{0} %",
     "zoom.auto": "automatisch ({0})",
     "settings.more": "Mehr in {0}",
@@ -355,7 +368,8 @@ var texts = {
     "ask.truncated": "gekürzt – ganz im Terminal",
     "btn.send": "Schicken",
     "reply.hint": "Antwort",
-    "type.send": "{0} – Enter schickt ab"
+    "type.send": "{0} – Enter schickt ab",
+    "paste.tooMuch": "Zu viel zum Einfügen"
   },
   en: {
     "state.needs": "{0} needs you",
@@ -407,12 +421,14 @@ var texts = {
     "months": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
 
     "toast.many": "{0} notifications",
+    "toast.critical": "{0} important notifications",
     "toast.away": "While you were away: ",
     "check.running": "checking …",
     "check.idle": "check now",
     "check.none": "nothing new",
     "check.one": "1 new",
     "check.many": "{0} new",
+    "check.failed": "didn't work",
 
     "action.reply": "Reply",
     "action.open": "Open",
@@ -492,6 +508,16 @@ var texts = {
     "settings.removeNow": "Uninstall",
     "settings.removeFailed": "Uninstalling didn't work",
     "settings.removeFailedBody": "In a terminal: omarchy-buddy-setup --uninstall",
+    "helper.start": "The setup couldn't start. Try again.",
+    "helper.time": "The setup didn't answer in time and was stopped. Try again.",
+    "helper.output": "The setup printed too much and was stopped. Try again.",
+    "helper.failed": "The setup didn't work. Try again.",
+    "helper.title": "That didn't work",
+    "helper.body.start": "{0} couldn't start. Try again.",
+    "helper.body.time": "{0} took too long and was stopped. Try again.",
+    "helper.body.output": "{0} printed too much and was stopped. Try again.",
+    "helper.body.drop": "Too much is running at once, {0} wasn't started. Try again in a moment.",
+    "helper.body.failed": "{0} stopped with an error. Try again.",
     "zoom.percent": "{0}%",
     "zoom.auto": "automatic ({0})",
     "settings.more": "More in {0}",
@@ -676,7 +702,8 @@ var texts = {
     "ask.truncated": "shortened – all of it in the terminal",
     "btn.send": "Send",
     "reply.hint": "Reply",
-    "type.send": "{0} – Enter sends"
+    "type.send": "{0} – Enter sends",
+    "paste.tooMuch": "Too much to paste"
   }
 }
 

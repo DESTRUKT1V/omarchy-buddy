@@ -29,6 +29,7 @@ Column {
   }
 
   SectionTitle {
+    readonly property string probeOwner: "history"  // its link acts on the whole history (Probe.ownerOf)
     visible: !view.forYou
     text: Theme.t("notes.title")
     link: view.app.notifications.canUndo ? Theme.t("notes.undo") : view.empty ? "" : Theme.t("notes.clear")

@@ -22,23 +22,24 @@ Scope {
   // (both files together, nothing twice) and empties the other one.
   onHistoryModeChanged: place()
   function place() {
-    if (placeRun.running) return
+    if (placeRun.active) return
     placeRun.mode = historyMode
-    placeRun.running = true
+    placeRun.start()
   }
 
   // "jetzt prüfen" (ToastLogic.checkLabel)
   property real checkStarted: 0
   property bool checkDone: false
-  readonly property bool checking: feedRun.running
-  readonly property string checkLabel: ToastLogic.checkLabel({ running: checking, done: checkDone,
+  property bool checkFailed: false
+  readonly property bool checking: feedRun.active
+  readonly property string checkLabel: ToastLogic.checkLabel({ running: checking, done: checkDone, failed: checkFailed,
                                                                found: ToastLogic.newSince(items, checkStarted) }, Theme.lang)
 
   function checkNow() {
     if (checking) return
     checkStarted = Date.now() / 1000
     checkDone = false
-    feedRun.running = true
+    feedRun.start()
     app.playEmote("talk", 1200)
   }
 
@@ -69,21 +70,29 @@ Scope {
     onLoadFailed: feed.load("[]")
     onFileChanged: reload()
   }
-  Process {
+  // Finite helpers (Helper.qml, #255). The feed has no overall deadline of
+  // its own (only per step, the longest the Rückfall check with 600 s): its
+  // timer's 15 minutes. One that did not get through says so; the link
+  // ("jetzt prüfen") tries again.
+  Helper {
     id: feedRun
-    command: [feed.app.feeder, "--now"]
-    onExited: {
+    argv: [feed.app.feeder, "--now"]
+    seconds: 900
+    onDone: result => {
       newsFile.reload()
       feed.checkDone = true
+      feed.checkFailed = result !== "ok"
       checkShown.restart()
     }
   }
-  Process {
+  Helper {
     id: placeRun
     property string mode
-    command: ["python3", feed.app.repo + "/lib/buddy.py", "news", mode]
-    onExited: {
+    argv: ["python3", feed.app.repo + "/lib/buddy.py", "news", mode]
+    onDone: result => {
       newsFile.reload()
+      // A pop-up names buddy.py (not python3); the next change of the setting tries again.
+      if (result !== "ok") feed.app.helperFailed(argv.slice(1), result)
       if (mode !== feed.historyMode) feed.place()
     }
   }

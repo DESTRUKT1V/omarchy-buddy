@@ -155,3 +155,53 @@ test("Spotify ohne Verbindung: was das + zeigt", () => {
   assert.equal(L.likeState(false, "", null, false, k()), "", "Werbung, Podcast")
   assert.equal(L.likeState(true, u, { uri: u, saved: true }, false, k()), "saved", "verbunden: echter Zustand")
 })
+
+// #251: a cover on the net reaches Image only as the helper's checked file.
+const FILE = "file:///run/user/1000/omarchy-buddy/covers/0123456789abcdef0123456789abcdef.jpg"
+
+test("Cover: Bilder vom Rechner unverändert, aus dem Netz nur als geprüfte Datei", () => {
+  assert.equal(L.coverSource("file:///tmp/a.png", {}), "file:///tmp/a.png")
+  assert.equal(L.coverSource("/tmp/a.png", {}), "/tmp/a.png")
+  assert.equal(L.coverSource("image://qsimage/1", {}), "image://qsimage/1")
+  assert.equal(L.coverSource("", {}), "")
+  assert.equal(L.coverSource("https://i.scdn.co/image/ab", {}), "", "noch nicht geladen: Platzhalter")
+  assert.equal(L.coverSource("https://i.scdn.co/image/ab", { "https://i.scdn.co/image/ab": { path: "", at: 1 } }), "", "fehlgeschlagen: Platzhalter")
+  assert.equal(L.coverSource("https://i.scdn.co/image/ab", { "https://i.scdn.co/image/ab": { path: FILE, at: 1 } }), FILE)
+  assert.equal(L.coverSource("http://example.com/a.png", {}), "", "http nie direkt")
+  assert.equal(L.coverSource("ftp://example.com/a.png", {}), "")
+  assert.equal(L.coverSource("HTTPS://example.com/a.png", {}), "")
+})
+
+test("Cover: nur https wird geholt, einmal, nach Fehler erst später wieder", () => {
+  const u = "https://i.scdn.co/image/ab"
+  assert.equal(L.coverWanted(u, {}, [], 0), true)
+  assert.equal(L.coverWanted("http://example.com/a.png", {}, [], 0), false)
+  assert.equal(L.coverWanted("file:///tmp/a.png", {}, [], 0), false)
+  assert.equal(L.coverWanted("https://", {}, [], 0), false)
+  assert.equal(L.coverWanted(u, {}, [u], 0), false, "wartet schon")
+  assert.equal(L.coverWanted(u, { [u]: { path: FILE, at: 0 } }, [], 1e9), false, "schon da")
+  assert.equal(L.coverWanted(u, { [u]: { path: "", at: 1000 } }, [], 1000 + L.coverRetryMs - 1), false, "eben fehlgeschlagen")
+  assert.equal(L.coverWanted(u, { [u]: { path: "", at: 1000 } }, [], 1000 + L.coverRetryMs), true, "erneuter Versuch")
+})
+
+test("Cover: Warteschlange und Gedächtnis begrenzt, die neuesten bleiben", () => {
+  let q = []
+  for (let i = 0; i < 10; i++) q = L.coverQueued(q, "https://a/" + i)
+  assert.deepEqual(q, ["https://a/6", "https://a/7", "https://a/8", "https://a/9"])
+  assert.deepEqual(L.coverQueued(q, "https://a/7"), ["https://a/6", "https://a/8", "https://a/9", "https://a/7"])
+  let known = {}
+  for (let i = 0; i < 40; i++) known = L.coverKnown(known, "https://a/" + i, "", i)
+  assert.equal(Object.keys(known).length, L.coverKeep)
+  assert.ok(!("https://a/0" in known) && "https://a/39" in known)
+  assert.ok(L.coverKeep < 32, "der Helfer behält mehr Dateien, als die Insel kennt")
+})
+
+test("Cover: nur die Antwort des Helfers aus dem privaten Ordner zählt", () => {
+  assert.equal(L.coverPath(FILE + "\n"), FILE)
+  assert.equal(L.coverPath(""), "")
+  assert.equal(L.coverPath("https://i.scdn.co/image/ab"), "")
+  assert.equal(L.coverPath("file:///home/me/x.png"), "")
+  assert.equal(L.coverPath("file:///run/user/1000/omarchy-buddy/covers/../../../etc/0123456789abcdef0123456789abcdef.png"), "")
+  assert.equal(L.coverPath(FILE.replace(".jpg", ".svg")), "")
+  assert.equal(L.coverPath(FILE + "\n" + FILE), "")
+})

@@ -50,6 +50,9 @@ Column {
       Component.onCompleted: if (visible) forceActiveFocus()
       onAccepted: field.send()
       Keys.onEscapePressed: field.cancelled()
+      Accessible.description: paste.tooMuch ? tooMuch.text : ""
+      Keys.onPressed: (event) => paste.key(event)
+      Paste { id: paste }
       // Keep the line being typed in view.
       onCursorRectangleChanged: {
         var r = cursorRectangle
@@ -66,6 +69,7 @@ Column {
       }
     }
   }
+  TooMuchHint { id: tooMuch; paste: paste; width: parent.width }
   Row {
     spacing: Theme.s(6)
     ActionButton { label: Theme.t("btn.send"); strong: true; enabled: input.text.trim() !== ""; onClicked: field.send() }

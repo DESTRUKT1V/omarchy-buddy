@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# shell/Helper.qml (#255) in a real Quickshell without a screen
+# (QT_QPA_PLATFORM=offscreen, sandbox HOME): tests/helper.qml runs its cases
+# and says "ok"/"FEHLER" per case. Skipped without quickshell.
+# Aufruf: tests/helper-qml
+set -uo pipefail
+cd "$(dirname "$0")/.."
+command -v qs >/dev/null || { echo "übersprungen: kein qs"; exit 0; }
+dir=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-buddy-helper-qml-XXXXXX") || exit 1
+trap 'rm -rf "$dir"' EXIT
+mkdir "$dir/shell"
+cp shell/Helper.qml shell/HelperLogic.js shell/Strings.js "$dir/shell/"
+cp tests/helper.qml "$dir/shell.qml"
+# Quickshell has no quit: it runs until FERTIG (and a second longer, for a
+# second done), at most 40 s.
+# qs itself is stopped (not the sandbox around it, which then cleans up).
+QT_QPA_PLATFORM=offscreen tests/sandbox bash -c 'qs -p "$1" & echo $! > "$2"; wait' sh "$dir" "$dir/pid" >"$dir/log" 2>&1 &
+box=$!
+for _ in $(seq 400); do grep -q FERTIG "$dir/log" && break; sleep 0.1; done
+sleep 1
+[ -s "$dir/pid" ] && kill "$(cat "$dir/pid")" 2>/dev/null
+wait "$box" 2>/dev/null
+out=$(cat "$dir/log")
+lines=$(printf '%s\n' "$out" | sed -n 's/.*qml[^:]*: //p' | grep -E '^(ok|FEHLER|FERTIG)')
+printf '%s\n' "$lines" | grep -v FERTIG
+cases=$(grep -cE '^  (Case|Helper) \{' tests/helper.qml)
+oks=$(printf '%s\n' "$lines" | grep -c '^ok')
+if printf '%s\n' "$lines" | grep -q '^FERTIG' && [ "$oks" -eq "$cases" ] && ! printf '%s\n' "$lines" | grep -q '^FEHLER'; then
+  echo "FEHLER: keine"; exit 0
+fi
+echo "FEHLER: $oks von $cases Fällen ok (oder ein done zu viel / nicht fertig)"
+printf '%s\n' "$out" | grep -iE 'error|warn' | grep -v WAYLAND_DISPLAY | head -20
+exit 1

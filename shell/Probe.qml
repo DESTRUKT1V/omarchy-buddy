@@ -6,12 +6,18 @@ import "theme"
 
 // The test IPC "omarchy-buddy.test" for tests/live and tests/gallery.
 // state() only reads. The functions starting with "test" act, but only on
-// notifications a test sent itself (app name "Buddy-Test", see
-// ProbeLogic.js) or on what the island merely shows (peek, emote); the user's
-// own notifications, sessions and settings stay untouched. layout() measures
-// what can be clicked; testClick/testType act like the user, but not on a
-// real Claude request (only on sessions "buddy-test-…"). The player window's
-// buttons click too; tests/fake-player plays for them.
+// notifications a test sent itself (app name "Buddy-Test", keys
+// "buddy-test-…", see ProbeLogic.js) or on what the island merely shows
+// (peek, emote); the user's own notifications, sessions and settings stay
+// untouched. layout() measures what can be clicked; testClick/testType act
+// like the user, but only on the one test session, record or part the test
+// names, checked in the same call, in every view (ProbeLogic.allows). The
+// player window's buttons only for tests/fake-player.
+//
+// A test run (testBegin … testEnd) stops for good as soon as something real
+// gets in the way (ProbeLogic.interruption): from then on every action
+// answers "interrupted:<why>" and the test's settings and Spotify state go
+// back at once; the test cleans up its own things and tries again later.
 //
 //   qs ipc -p /usr/share/omarchy/shell call omarchy-buddy.test state
 Scope {
@@ -22,6 +28,12 @@ Scope {
   property var savedSettings: null  // the real settings while testSettings() holds others
   property string testText: ""
   property var savedSpotify: null   // the real Spotify state while testSpotify() holds another
+  property bool run: false          // a test run is on (testBegin)
+  property string stopped: ""       // why it stopped (ProbeLogic.interruption), "" while it goes on
+  property bool acting: false       // inside a test action: what opens now, the test opened
+  property bool viewByTest: false   // the open view / settings page came from the test, not the user
+  property bool settingsByTest: false
+  property var known: null          // the real records at the start (ProbeLogic.realKeys)
   // Frames the island's window has drawn since the shell started, for tests/gpu.
   property int frames: 0
   Connections { target: probe.island.Window.window; function onFrameSwapped() { probe.frames++ } }
@@ -40,6 +52,82 @@ Scope {
   }
   function holdTest() {
     if (testText !== "") Qt.callLater(function() { if (probe.testText !== "") probe.app.settings.apply(probe.testText) })
+  }
+
+  function act(fn) {
+    acting = true
+    try { return fn() } finally { acting = false }
+  }
+
+  function facts() {
+    var a = app
+    return { asks: a.sessions.asks, toast: a.toasts.toast, queue: a.toasts.queue, heldBack: a.toasts.heldBack,
+             opened: a.opened, viewByTest: viewByTest, settingsShown: a.settingsShown, settingsByTest: settingsByTest,
+             paused: a.paused, known: known, records: a.notifications.notes.concat(a.news.items) }
+  }
+
+  // Something real in the way ends the run at once, also between two calls.
+  function watch() {
+    if (!run || stopped) return
+    var why = ProbeLogic.interruption(facts())
+    if (!why) return
+    stopped = why
+    restoreTest()
+  }
+  // "" or why the test must not act now.
+  function blocked() { watch(); return run && stopped ? "interrupted:" + stopped : "" }
+
+  // The settings and Spotify state the user may now see are their own again.
+  function restoreTest() { restoreSettings(); restoreSpotify() }
+  function restoreSettings() {
+    if (savedSettings) {
+      var s = app.settings
+      testText = ""
+      s.values = savedSettings.values; s.extra = savedSettings.extra
+      s.invalid = savedSettings.invalid; s.broken = savedSettings.broken; s.held = false
+      savedSettings = null
+    }
+  }
+  function restoreSpotify() {
+    if (savedSpotify) {
+      var p = app.spotify
+      p.answer = savedSpotify.answer; p.connected = savedSpotify.connected
+      p.connecting = savedSpotify.connecting; p.connectError = savedSpotify.connectError
+      p.hyprctl = savedSpotify.hyprctl; p.window = ""; p.sent = ""; p.testSeen = null; p.look()
+      savedSpotify = null
+    }
+  }
+
+  Connections {
+    target: probe.app
+    function onOpenedChanged() { probe.viewByTest = probe.app.opened && probe.acting; probe.watch() }
+    function onSettingsShownChanged() { probe.settingsByTest = probe.app.settingsShown && probe.acting; probe.watch() }
+    function onPausedChanged() { probe.watch() }
+  }
+  Connections {
+    target: probe.app.sessions
+    function onAsksChanged() { probe.watch() }
+  }
+  Connections {
+    target: probe.app.notifications
+    function onNotesChanged() { probe.watch() }
+  }
+  Connections {
+    target: probe.app.news
+    function onItemsChanged() { probe.watch() }
+  }
+  Connections {
+    target: probe.app.toasts
+    function onToastChanged() { probe.watch() }
+    function onQueueChanged() { probe.watch() }
+    function onHeldBackChanged() { probe.watch() }
+  }
+
+  function clearTest() {
+    var toasts = app.toasts
+    toasts.queue = toasts.queue.filter(function(t) { return !ProbeLogic.isTest(t) })
+    toasts.heldBack = toasts.heldBack.filter(function(t) { return !ProbeLogic.isTest(t) })
+    if (ProbeLogic.isTest(toasts.toast)) toasts.next()  // the queue holds no test pop-up now
   }
 
   // Every visible MouseArea in the island (or the player window), except their own backgrounds.
@@ -69,19 +157,29 @@ Scope {
     return true
   }
 
-  // Clicks only on test things: no real Claude request is ever answered.
-  function mayAct() {
-    var ask = app.sessions.currentAsk
-    return app.mode !== "needs" || (!!ask && String(ask.session.id).indexOf("buddy-test-") === 0)
+  // Whose thing an item acts on (ProbeLogic.owner), read from it and its parents.
+  function ownerOf(item) {
+    var levels = []
+    for (var p = item; p && p !== island; p = p.parent) {
+      if (p === playerWindow) { levels.push({ marker: "player" }); break }
+      levels.push({ marker: p.probeOwner, ask: p.ask, session: p.session, note: p.note !== undefined ? p.note : p instanceof Loader ? null : p.item,
+                    model: p.modelData })
+    }
+    return ProbeLogic.owner(levels)
   }
 
-  function findArea(name) {
-    // The player's buttons only for the test's own player, never the user's music.
-    var player = app.player.current
-    var areas = clickables(island, [])
-    if (player && ProbeLogic.isTest({ app: String(player.identity) })) areas = clickables(playerWindow, areas)
-    for (var i = 0; i < areas.length; i++) if (nameOf(areas[i]) === name) return areas[i]
-    for (i = 0; i < areas.length; i++) if (name !== "" && nameOf(areas[i]).indexOf(name) === 0) return areas[i]
+  // May the test act on this item for `want` (ProbeLogic.allows)? Read at the moment of acting.
+  function owned(item, want) {
+    var n = app.notifications, player = app.player.current
+    return ProbeLogic.allows(ownerOf(item), want, { notes: n.notes, removed: n.removed, canUndo: n.canUndo,
+      testPlayer: !!player && ProbeLogic.isTest({ app: String(player.identity) }) })
+  }
+
+  // The clickable with this name (exactly, else the first starting with it) that acts on `want`.
+  function findArea(name, want) {
+    var areas = clickables(playerWindow, clickables(island, []))
+    for (var i = 0; i < areas.length; i++) if (nameOf(areas[i]) === name && owned(areas[i], want)) return areas[i]
+    for (i = 0; i < areas.length; i++) if (name !== "" && nameOf(areas[i]).indexOf(name) === 0 && owned(areas[i], want)) return areas[i]
     return null
   }
 
@@ -123,6 +221,23 @@ Scope {
     target: "omarchy-buddy.test"
 
     function ping(): string { return "ok" }
+
+    // A test run: "ok", or why not now (ProbeLogic.interruption; the view has to be closed).
+    function testBegin(): string {
+      probe.run = false
+      probe.viewByTest = false
+      probe.settingsByTest = false
+      probe.known = null
+      var why = ProbeLogic.interruption(probe.facts())
+      if (why) return why
+      probe.known = ProbeLogic.realKeys(probe.app.notifications.notes.concat(probe.app.news.items))
+      probe.stopped = ""
+      probe.run = true
+      return "ok"
+    }
+    function testEnd(): void { probe.run = false; probe.stopped = "" }
+    // Why the run stopped, "" while it goes on.
+    function testInterrupted(): string { probe.watch(); return probe.stopped }
     function frames(): int { return probe.frames }
 
     function timers(): string {
@@ -177,38 +292,68 @@ Scope {
     }
 
     // A click on the clickable thing with this name (exactly, or the first
-    // one starting with it), as if the user clicked it.
-    function testClick(name: string): string {
-      var area = probe.mayAct() ? probe.findArea(name) : null
+    // one starting with it) that acts on `owner` (a test session's id, a test
+    // record's key, "history", "view" or "player"), as if the user clicked it.
+    function testClick(name: string, owner: string): string {
+      var why = probe.blocked()
+      if (why) return why
+      var area = probe.findArea(name, owner)
       if (!area || !probe.usable(area)) return "none"
-      probe.drive()
-      area.clicked(null)
+      probe.act(function() { probe.drive(); area.clicked(null) })
       return "ok"
     }
 
-    // Text in the open text field (own answer, plan feedback, reply), then Enter.
-    function testType(text: string): string {
-      var input = probe.mayAct() ? probe.first(probe.island, function(i) { return i instanceof TextInput }) : null
+    // Text in the open text field of `owner` (own answer, plan feedback), then Enter.
+    function testType(text: string, owner: string): string {
+      var why = probe.blocked()
+      if (why) return why
+      var input = probe.first(probe.island, function(i) { return i instanceof TextInput && probe.owned(i, owner) })
       if (!input) return "none"
-      probe.drive()
-      input.text = text
-      input.accepted()
+      probe.act(function() { probe.drive(); input.text = text; input.accepted() })
       return "ok"
     }
+
+    // Omarchy's "notifications" IPC method (act, invokeLast, dismissAll …),
+    // but only while everything it would act on is the test's, decided in
+    // this call (ProbeLogic.omarchyTargets); "foreign" otherwise.
+    function testOmarchy(method: string, arg: string): string {
+      var why = probe.blocked()
+      if (why) return why
+      var t = probe.app.toasts
+      var targets = ProbeLogic.omarchyTargets(method, { mode: probe.app.mode, toast: t.toast, queue: t.queue })
+      if (!targets || !targets.every(ProbeLogic.isTest)) return "foreign"
+      var ipc = probe.app.notifications.omarchyIpc
+      return probe.act(function() {
+        return method === "invokeAction" ? ipc.invokeAction(Number(arg)) : method === "dismiss" ? ipc.dismiss(arg) : ipc[method]()
+      })
+    }
+
+    // The open view open or closed, as the test's own; a view the user opened stays.
+    function testOpen(on: bool): string {
+      if (on) {
+        var why = probe.blocked()
+        if (why) return why
+      } else if (probe.run && probe.app.opened && !probe.viewByTest) return "interrupted:view"
+      probe.act(function() { probe.app.opened = on && !probe.app.veiled })
+      return "ok"
+    }
+
+    // The test's pop-ups off the screen (in the history they stay).
+    function testClear(): string { probe.clearTest(); return "ok" }
 
     // Other settings for a while, as if config.json held this text (also a
     // broken one); nothing is written. "" puts the real ones back.
     function testSettings(text: string): string {
       var s = probe.app.settings
       if (text.trim() === "") {
-        probe.testText = ""
         if (!probe.savedSettings) return "none"
-        s.values = probe.savedSettings.values; s.extra = probe.savedSettings.extra
-        s.invalid = probe.savedSettings.invalid; s.broken = probe.savedSettings.broken
-        probe.savedSettings = null
+        probe.restoreSettings()
         return "ok"
       }
+      var why = probe.blocked()
+      if (why) return why
       if (!probe.savedSettings) probe.savedSettings = { values: s.values, extra: s.extra, invalid: s.invalid, broken: s.broken }
+      s.held = true
       probe.testText = text
       s.apply(text)
       return "ok"
@@ -216,6 +361,8 @@ Scope {
 
     // An action button on a test notification, as if clicked.
     function testAction(key: string, id: string): string {
+      var why = probe.blocked()
+      if (why) return why
       var n = ProbeLogic.testNote(probe.app.notifications.notes, key)
       if (!n) return "none"
       return probe.app.notifications.invokeAction(n, id) ? "ok" : "none"
@@ -223,6 +370,8 @@ Scope {
 
     // An inline reply to a test notification, as if typed and sent.
     function testReply(key: string, text: string): string {
+      var why = probe.blocked()
+      if (why) return why
       var n = ProbeLogic.testNote(probe.app.notifications.notes, key)
       if (!n || !probe.app.notifications.live(key)) return "none"
       probe.app.notifications.sendReply(n, text)
@@ -232,20 +381,24 @@ Scope {
     // Takes every test notification off the screen and out of the history.
     function testForget(): string {
       var store = probe.app.notifications
-      var toasts = probe.app.toasts
       var groups = ProbeLogic.testGroups(store.notes)
-      toasts.queue = toasts.queue.filter(function(t) { return !ProbeLogic.isTest(t) })
-      toasts.heldBack = toasts.heldBack.filter(function(t) { return !ProbeLogic.isTest(t) })
-      if (ProbeLogic.isTest(toasts.toast)) toasts.next()
+      probe.clearTest()
       for (var i = 0; i < groups.length; i++) store.removeGroup(groups[i])
       return String(groups.length)
     }
 
     // The settings page in the open view, for the gallery (shows, changes nothing).
-    function testSettingsPage(on: bool): void {
-      probe.drive()
-      if (on) probe.app.opened = true
-      probe.app.settingsShown = on
+    function testSettingsPage(on: bool): string {
+      if (on) {
+        var why = probe.blocked()
+        if (why) return why
+      } else if (probe.run && probe.app.settingsShown && !probe.settingsByTest) return "interrupted:view"
+      probe.act(function() {
+        probe.drive()
+        if (on) probe.app.opened = true
+        probe.app.settingsShown = on
+      })
+      return "ok"
     }
 
     // The settings page's own news sources (#164) in another state:
@@ -271,12 +424,11 @@ Scope {
       var s = probe.app.spotify
       if (text.trim() === "") {
         if (!probe.savedSpotify) return "none"
-        s.answer = probe.savedSpotify.answer; s.connected = probe.savedSpotify.connected
-        s.connecting = probe.savedSpotify.connecting; s.connectError = probe.savedSpotify.connectError
-        s.hyprctl = probe.savedSpotify.hyprctl; s.window = ""; s.sent = ""; s.testSeen = null; s.look()
-        probe.savedSpotify = null
+        probe.restoreSpotify()
         return "ok"
       }
+      var why = probe.blocked()
+      if (why) return why
       var t
       try { t = JSON.parse(text) } catch (e) { return "invalid" }
       if (!probe.savedSpotify) probe.savedSpotify = { answer: s.answer, connected: s.connected, connecting: s.connecting, connectError: s.connectError, hyprctl: s.hyprctl }

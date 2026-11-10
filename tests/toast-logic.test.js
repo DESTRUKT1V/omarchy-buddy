@@ -25,7 +25,99 @@ test("Flutschutz: eine Sammelmeldung in der nächsten gibt Namen und Zahl weiter
   const second = L.fold(first, [t("e"), t("f", { count: 3 }), t("g")], 2)
   assert.equal(second.length, 1)
   assert.equal(second[0].title, "9 Meldungen")
-  assert.deepEqual(second[0].names, ["a", "b", "c", "d", "e", "f", "g"])
+  // Only four names are kept (three shown, " …" for more); the total stays a number.
+  assert.deepEqual(second[0].names, ["a", "b", "c", "d"])
+  assert.equal(second[0].body, "a, b, c …")
+  // #256: whether it folds only a test's pop-ups goes on as a flag, for the test IPC.
+  assert.equal(second[0].testOnly, false)
+  const own = L.fold([], [1, 2, 3, 4].map(i => t("x" + i, { app: "Buddy-Test" })), 1)
+  assert.equal(L.fold(own, [1, 2, 3, 4].map(i => t("y" + i, { key: "buddy-test-" + i })), 2)[0].testOnly, true)
+  assert.equal(L.fold(own, [t("echt", { app: "Beeper" }), t("z"), t("w"), t("v")], 2)[0].testOnly, false)
+})
+
+// #254 (Katalog-Review 1.3.0): every list of pop-ups stays finite.
+const crit = (i, extra) => t("Krit " + i, Object.assign({ key: "k" + i, sticky: true, level: "error" }, extra))
+const bounded = list => {
+  assert.ok(list.filter(x => x.sticky).length <= L.maxSticky, "sticky " + list.filter(x => x.sticky).length)
+  assert.ok(list.filter(x => !x.sticky).length <= L.maxLoose, "loose " + list.filter(x => !x.sticky).length)
+  for (const x of list) assert.ok(!x.names || x.names.length <= L.maxNames, "names")
+}
+
+test("Grenze: wiederholt normale Meldungen falten zu einer Sammelmeldung mit Zahl, Namen begrenzt", () => {
+  let queue = []
+  for (let i = 1; i <= 5000; i++) { queue = L.fold(queue, [t("n" + i)], i); bounded(queue) }
+  // a summary plus the newest single ones, which the next fold takes in
+  assert.deepEqual([L.countOf(queue), queue[0].names], [5000, ["n1", "n2", "n3", "n4"]])
+  assert.match(queue[0].title, /^\d+ Meldungen$/)
+})
+
+test("Grenze: wiederholt kritische Meldungen: höchstens maxSticky, die ältesten als eine Sammelmeldung „N wichtige Meldungen“", () => {
+  let queue = []
+  for (let i = 1; i <= 2000; i++) { queue = L.fold(queue, [crit(i), t("n" + i)], i); bounded(queue) }
+  const sticky = queue.filter(x => x.sticky)
+  assert.equal(sticky.length, L.maxSticky)
+  const sum = sticky[0]
+  assert.deepEqual([sum.title, sum.count, sum.level, sum.sticky, sum.names.length], ["1991 wichtige Meldungen", 1991, "error", true, 4])
+  assert.ok(sum.key, "the critical summary has a key (stickyOnes, restoreSticky)")
+  // the newest nine stay single and in order
+  assert.deepEqual(sticky.slice(1).map(x => x.title), Array.from({ length: 9 }, (_, i) => "Krit " + (1992 + i)))
+  assert.equal(L.countOf(queue.filter(x => !x.sticky)), 2000)
+  // an appointment only (info) keeps the summary from turning red
+  let events = []
+  for (let i = 1; i <= 12; i++) events = L.fold(events, [crit(i, { level: "info" })], i)
+  assert.equal(events[0].level, "info")
+  // it is kept over a restart like the critical ones themselves
+  const back = L.restoreSticky(JSON.stringify(L.storedSticky(L.stickyOnes(null, queue, []), "full")))
+  assert.deepEqual(back.map(x => x.title), sticky.map(x => x.title))
+})
+
+test("Grenze: lange Pause hält zurück, ohne zu wachsen, und gibt bei der Rückkehr alles als Zahl weiter", () => {
+  let held = []
+  for (let i = 1; i <= 3000; i++) {
+    const items = [t("n" + i), t("Lautstärke", { ephemeral: true }), t("Lied", { media: true })]
+    if (i % 3 === 0) items.push(crit(i))
+    held = L.hold(held, items, i)
+    bounded(held)
+  }
+  assert.equal(held.some(x => x.ephemeral || x.media), false)
+  const back = L.welcomeBack(held, 4000)
+  const loose = back.filter(x => !x.sticky)
+  assert.deepEqual([loose.length, loose[0].title, loose[0].count], [1, "Während du weg warst: 3000 Meldungen", 3000])
+  const sticky = back.filter(x => x.sticky)
+  assert.equal(sticky.length, L.maxSticky)
+  assert.equal(sticky.reduce((n, x) => n + (x.count || 1), 0), 1000)
+})
+
+test("Grenze: offene Ansicht: was währenddessen kommt, bleibt begrenzt und kommt beim Schließen als eine Meldung", () => {
+  const open = L.onOpen(t("auf dem Schirm"), [t("a"), t("b")], [])
+  let held = open.heldBack
+  for (let i = 1; i <= 1000; i++) { held = L.hold(held, [t("n" + i)], i); bounded(held) }
+  const after = L.afterOpen(held, 2000)
+  assert.deepEqual([after.length, after[0].title, after[0].count], [1, "1002 Meldungen", 1002])
+  // a single summary is renamed too, with the newest time
+  assert.equal(L.welcomeBack([L.fold([], [t("a"), t("b"), t("c"), t("d")], 1)[0]], 9)[0].title, "Während du weg warst: 4 Meldungen")
+})
+
+test("Grenze: Text je Pop-up gekürzt, auch bei riesigen Titeln bleibt die Liste klein", () => {
+  const N = require("./lib/load").load("NoteLogic.js")
+  const huge = "x".repeat(1000000)
+  const toast = N.noteToast({ key: "a", app: "a", summary: huge, body: huge, urgency: 2, actions: [] })
+  assert.deepEqual([toast.title.length, toast.body.length, toast.title.slice(-1)], [N.maxText, N.maxText, "…"])
+  const textTitle = N.noteToast({ key: "b", app: "a", summary: "", body: huge, urgency: 1, actions: [] })
+  assert.equal(textTitle.title.length, N.maxText)
+  const small = { time: 2, title: "kurz", body: "" }
+  const news = L.freshNews([{ time: 3, title: huge, body: huge }, small], 1, () => false)
+  assert.deepEqual([news[0], news[1].title.length, news[1].body.length], [small, N.maxText, N.maxText])
+  let held = []
+  for (let i = 1; i <= 200; i++) held = L.hold(held, [N.noteToast({ key: "k" + i, app: "a", summary: huge, body: huge, urgency: i % 2 ? 2 : 1, actions: [] })], i)
+  assert.ok(JSON.stringify(held).length < (L.maxSticky + L.maxLoose) * 3 * N.maxText, JSON.stringify(held).length)
+})
+
+test("Grenze: ohne Text gespeichert verliert eine kritische Sammelmeldung ihre Namen", () => {
+  let queue = []
+  for (let i = 1; i <= 12; i++) queue = L.fold(queue, [crit(i)], i)
+  const stored = L.storedSticky(L.stickyOnes(null, queue, []), "noText")
+  assert.deepEqual([stored[0].names, stored[0].body, stored[0].count], [[], "", 3])
 })
 
 test("Zurück am PC: kritische einzeln, der Rest zusammengefasst", () => {
@@ -115,6 +207,7 @@ test("„jetzt prüfen“ sagt, was es tut und was es fand", () => {
   assert.equal(L.checkLabel({ running: false, done: true, found: 0 }), "nichts Neues")
   assert.equal(L.checkLabel({ running: false, done: true, found: 1 }), "1 neu")
   assert.equal(L.checkLabel({ running: false, done: true, found: 4 }), "4 neu")
+  assert.equal(L.checkLabel({ running: false, done: true, failed: true, found: 0 }), "hat nicht geklappt")
   assert.equal(L.newSince([{ time: 10 }, { time: 5 }, {}], 5), 2)
 })
 

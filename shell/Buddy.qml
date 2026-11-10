@@ -9,6 +9,7 @@ import "views"
 import "IslandLogic.js" as IslandLogic
 import "SettingsLogic.js" as SettingsLogic
 import "ToastLogic.js" as ToastLogic
+import "HelperLogic.js" as HelperLogic
 import "Strings.js" as Strings
 
 // A companion in Omarchy's bar (in the spirit of Coucou and NIO's NOMI). At
@@ -321,35 +322,51 @@ Item {
   }
 
   // A command that gets the user's words on stdin, never as an argument:
-  // other users can read /proc/*/cmdline (#219). Gone once it has run.
+  // other users can read /proc/*/cmdline (#219). A finite helper (#255,
+  // Helper.qml): a few at a time, a short queue behind them, gone once it
+  // has run; one that did not get through says so in a pop-up.
+  property int helpersRunning: 0
+  property var helpersWaiting: []
   function runWithInput(argv, text) {
-    withInput.createObject(buddy, { command: argv, payload: String(text) }).running = true
+    var step = HelperLogic.admit(helpersRunning, helpersWaiting.length)
+    if (step === "drop") helperFailed(argv, "drop")
+    else if (step === "wait") helpersWaiting = helpersWaiting.concat([[argv, String(text)]])
+    else {
+      helpersRunning++
+      withInput.createObject(buddy, { argv: argv, payload: String(text) }).start()
+    }
+  }
+  function helperDone(argv, result) {
+    helpersRunning--
+    if (result !== "ok") helperFailed(argv, result)
+    if (!helpersWaiting.length) return
+    var next = helpersWaiting[0]
+    helpersWaiting = helpersWaiting.slice(1)
+    runWithInput(next[0], next[1])
+  }
+  function helperFailed(argv, result) {
+    if (!toasts.onScreen(HelperLogic.failedKey)) toasts.enqueue([HelperLogic.failedToast(argv, result, Date.now() / 1000, lang)])
   }
   Component {
     id: withInput
-    Process {
-      property string payload
-      stdinEnabled: true
-      onStarted: { write(payload); stdinEnabled = false }
-      onExited: destroy()
-    }
+    Helper { onDone: result => { buddy.helperDone(argv, result); destroy() } }
   }
 
   // The state folder holds private messages: the user's alone, old files
   // and subfolders included (nobody else may read anything in it). The files
   // the shell writes are made first, because a file FileView creates is
   // 644 (an existing one keeps its rights).
-  Process {
-    running: true
-    command: ["sh", "-c",
+  Helper {
+    argv: ["sh", "-c",
       "umask 077; mkdir -p \"$2\"; mkdir -p \"$1\" && chmod -R go= \"$1\" && cd \"$1\" || exit 0; " +
       "for f in notifications.json ui.json news.json popups.json; do [ -e \"$f\" ] || : > \"$f\"; done", "sh", buddy.stateDir, buddy.runDir]
-    onExited: buddy.ready = true
+    Component.onCompleted: start()
+    onDone: buddy.ready = true
   }
-  Process {
-    running: true
-    command: ["sh", "-c", "getent passwd \"$(id -un)\""]
-    stdout: StdioCollector { onStreamFinished: { buddy.userName = IslandLogic.firstName(text); buddy.nameKnown = true } }
+  Helper {
+    argv: ["sh", "-c", "getent passwd \"$(id -un)\""]
+    Component.onCompleted: start()
+    onDone: (result, output) => { buddy.userName = result === "ok" ? IslandLogic.firstName(output) : ""; buddy.nameKnown = true }
   }
 
   // The first minutes (#192): without setup.json (the plugin switched on,

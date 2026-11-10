@@ -204,6 +204,13 @@ The source tree is described under [Development](#development).
   `mailto` links open.
 - The history setting (full / no text / off) also covers news and critical
   pop-ups; with "off" nothing goes to disk.
+- A music player's cover from the net never goes straight to Qt, which would
+  read the answer whole: `omarchy-buddy-cover` fetches it (https only, also
+  after at most 3 redirects, at most 4 MiB within 10 s, PNG/JPEG/WebP of at
+  most 4096 × 4096 pixels by its header) into
+  `$XDG_RUNTIME_DIR/omarchy-buddy/covers/`, and the island shows only that
+  file, one fetch at a time; otherwise the placeholder. Notifications' own
+  pictures from the net are never loaded.
 - The feed contacts GitHub (Claude Code's changelog, Omarchy and Orca
   releases; with `gh` signed in, your GitHub notifications), the package
   mirrors and, if you set one, your Uptime Kuma status page. Update checks are
@@ -232,12 +239,26 @@ user. It cannot protect you from a process that already runs as you:
 - **Private text stays out of process arguments,** which other users can
   read in `/proc/*/cmdline`: answers, plan feedback, prompts and terminal
   commands go to the hook and to `omarchy-buddy-say` on stdin.
+- **The island's background helpers are finite** (setup switches, checks,
+  answers passed to the hook, weather, Spotify, "jetzt prüfen"): each runs
+  under `timeout` with a deadline that ends everything it started (mostly
+  30–60 s; the Spotify sign-in 330 s, as it waits up to 300 s for the
+  browser; the feed's "jetzt prüfen" 15 minutes), keeps a bounded output
+  (64 K characters, weather answers a few MB), and at most four with input
+  run at once (16 wait, more are refused). One that cannot start, runs too long or prints
+  too much says so and can be tried again. Terminals and agents the island
+  opens keep running as long as you want.
 - **What the island starts:** `xdg-open` for a news item's link (any address
   a program handed to `omarchy-buddy-say --url`), its own scripts
   (`omarchy-buddy-update`, `omarchy-buddy-crash`, `omarchy-buddy-analyze`, the hook), `hyprctl` to
   focus a window, and for a clicked notification the command its sender
   attached (`omarchy-exec-argv`, as Omarchy's own notifications do) or the
   sender's own action. Commands run without a shell.
+- **Pasting into a text field** (Ctrl+V, Shift+Insert, middle click) does
+  not use Qt's own paste, which reads the whole clipboard with no limit
+  inside the shell: `wl-paste` fetches it in a process of its own, at most
+  64 KiB within 2 seconds. More, slower, or a field that changed or lost
+  the focus meanwhile pastes nothing.
 - **"Ask AI" hands a notification's text to an agent that does not ask.**
   `omarchy-agent` starts the default agent without permission prompts (Claude
   Code with `--permission-mode auto`, others with their own "don't ask"
@@ -261,8 +282,8 @@ Requirements:
 - Hyprland 0.56 or later with its Lua config (Omarchy's default): jumping
   to a session's window and the Spotify "+" use its Lua dispatcher
   (`hyprctl dispatch hl.dsp…`).
-- `python3`, `jq`, `git` and a Nerd Font for the agents' marks (all part of
-  Omarchy).
+- `python3`, `jq`, `git`, `wl-clipboard` and a Nerd Font for the agents'
+  marks (all part of Omarchy).
 - Optional: Claude Code, Codex or another supported agent; without one the
   island only does notifications and news. If you install an agent later, run
   `omarchy-buddy-setup` once more. `gh` (signed in) for GitHub news.
@@ -548,8 +569,8 @@ has sent something.
 
 **News** (`omarchy-buddy-feed`, every 15 min, "check now" in the island runs
 it at once): pending updates, full disks, failed services, crashes, new Claude Code
-and Omarchy versions, Orca releases (only with Orca installed some other way
-than below) and a morning
+and Omarchy versions, Orca releases (only with Orca installed: a hint with a
+link to the release, the buddy never downloads or installs Orca) and a morning
 greeting with your first name (from the system). The very first run only
 records the current state.
 
@@ -570,17 +591,16 @@ Updates are looked for every 12 hours (and on "check now") with whatever is
 installed, each check read-only and without root: Omarchy and pacman
 (`checkupdates`), the AUR (`yay`/`paru -Qua`), `mise`, `npm -g`, `pnpm -g`,
 Flatpak and rustup (mise only counts tools that are installed, not Omarchy's
-lazy ones), and Orca when its official AppImage is extracted to
-`~/.local/opt/orca`. One item names them all ("Updates: Omarchy, Orca 1.4.253,
+lazy ones). One item names them all ("Updates: Omarchy,
 12 packages, 3 mise tools, 2 npm"); it is replaced when that changes and goes
 away when everything is current. A source that fails or is offline keeps its
 last answer. "Update" opens a floating terminal (`omarchy-buddy-update`) that
 runs the updates one by one, on Omarchy `omarchy update` last (pacman, AUR;
-it may ask to restart), and checks again at the end. Orca: the newest AppImage
-from GitHub, checked against the SHA512 in its `latest-linux.yml`, extracted
-(no FUSE needed) and swapped in for `~/.local/opt/orca` in one go, the old
-folder kept until that worked; `~/.local/bin/orca-ide` and the menu entry keep
-working. While Orca runs it is left alone ("quit Orca first"). Off with "Updates" in the settings.
+it may ask to restart), and checks again at the end. Off with "Updates" in the settings.
+Orca is not in this item: a new Orca release is only a news item ("Orca 1.4.253
+released") with a link to the release on GitHub; the installed version is read
+from an AppImage extracted to `~/.local/opt/orca`, if there is one. You update
+Orca yourself, the buddy never downloads or runs an AppImage.
 
 **Software installed with `git clone`** (the update watcher, #224): every hour
 the feed looks one folder deep in `~/.config/omarchy/plugins`, `~/.local/share`,
@@ -601,7 +621,10 @@ helper that would run at every check) is listed without a switch, "Not watched:
 own Git settings": only its config is read, nothing else runs in it, and it is
 never checked or updated (#228, #232). The check is `git ls-remote` for one ref (no download,
 at most 20 s and 64 KB, git never asks for a password: no terminal prompt, ssh
-in BatchMode). New versions join the update item ("Updates: …, 2 plugins,
+in BatchMode). A remote whose address carries a password or token
+(`https://user:token@…`, also one added by an `insteadOf`) is never asked or
+fetched from: git would hand the full address to its HTTPS helper as an
+argument, which other accounts can read in the process list (#257). New versions join the update item ("Updates: …, 2 plugins,
 oh-my-zsh, 1 git repo"). In the update terminal, before `omarchy update`:
 Omarchy plugins through `omarchy plugin update ID` (it shows the diff and
 asks), oh-my-zsh through its own upgrade script (what `omz update` runs) and
@@ -783,7 +806,9 @@ update does not wait for it. Once the update and the shell restart are done:
 - otherwise it runs the contract tests and O-Morchy reports the result as
   news. With `"updateCheck": true` it also runs the live test (waiting until
   you are at the PC; it shows real test pop-ups and simulated Claude
-  requests on screen).
+  requests on screen). It acts only on its own test pop-ups and requests,
+  and stops at once when a real request or notification arrives, you open
+  the island or leave; it then tries again later.
 
 Log: `~/.local/state/omarchy-buddy/check.log`.
 
@@ -814,9 +839,10 @@ goes live only with the next `--stable`.
 | `agent-plugins/` | plugins for opencode (`opencode.js`) and Pi / Oh My Pi (`pi.js`): their events → `omarchy-buddy-hook --agent NAME`; opencode's answers from the island → `ctx.permission.reply` |
 | `bin/omarchy-buddy-statusline` | in front of Claude's status line: limits and context → `usage.json`, then the old status line |
 | `bin/omarchy-buddy-say`, `bin/omarchy-buddy-feed` | news → `~/.local/state/omarchy-buddy/news.json` |
-| `lib/updates.py`, `lib/orca.py`, `lib/gitwatch.py`, `bin/omarchy-buddy-update` | which updates wait (for the feed) and the terminal that installs them |
+| `lib/updates.py`, `lib/gitwatch.py`, `bin/omarchy-buddy-update` | which updates wait (for the feed) and the terminal that installs them; `lib/orca.py` only reads Orca's version |
 | `bin/omarchy-buddy-check`, `hooks/post-update` | check after Omarchy updates, fallback |
 | `bin/omarchy-buddy-crash`, `hooks/battery-low` | "Investigate" on a crash item; Omarchy's low-battery hook → news |
+| `bin/omarchy-buddy-cover`, `shell/theme/Covers.qml` | a player's cover from the net, bounded (https, bytes, time, pixels) → a private file for the island |
 | `bin/omarchy-buddy-analyze` | "Ask AI" on a critical notification: the notification (stdin) → a private file → `omarchy-agent` |
 | `lib/buddy.py`, `lib/texts.py` | paths; texts of the scripts (EN/DE) |
 
@@ -825,6 +851,7 @@ Tests:
     tests/run          # everything without the shell, a few seconds
     tests/live         # against the running shell: real notifications over D-Bus, Claude requests through the real hook
     tests/gallery      # every state of the island once, to look at (--fotos DIR for screenshots)
+    tests/isolation    # live and gallery act only on their own test things (#256), in a Quickshell of its own
     tests/emotes       # O-Morchy's emotions in pill, pop-up and reduced motion side by side, in a Quickshell of its own (--fotos DIR)
     tests/fake-player  # a music player on the bus for tests/live and tests/gallery
     tests/dauerlauf    # memory and CPU of the shell over hours, with artificial load

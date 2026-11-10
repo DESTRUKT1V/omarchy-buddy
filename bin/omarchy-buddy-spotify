@@ -17,8 +17,16 @@
 # missing), offline, limit (too many requests), port (the redirect port is
 # taken), cancelled, failed. Always exit 0. The tokens live in
 # ~/.local/state/omarchy-buddy/spotify.json (600) and are never printed.
+#
+# Connect, disconnect and refresh may overlap (#253): each writes the file
+# only under spotify.lock, after comparing it with what it started from.
+# Connecting and disconnecting give the file a new "generation"; a token
+# reply for an older generation (disconnected, or another account since)
+# is dropped and never written back.
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -32,7 +40,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
-from buddy import STATE_DIR, save_json  # noqa: E402
+from buddy import STATE_DIR, private_dir, private_open, save_json  # noqa: E402
 from texts import t  # noqa: E402
 
 # Overridable only so tests/spotify-test.py can talk to a stand-in server
@@ -43,6 +51,7 @@ PORT = int(os.environ.get("OMARCHY_BUDDY_SPOTIFY_PORT") or 43821)
 REDIRECT = f"http://127.0.0.1:{PORT}/callback"
 SCOPES = "user-library-read user-library-modify"
 FILE = os.path.join(STATE_DIR, "spotify.json")
+LOCK = os.path.join(STATE_DIR, "spotify.lock")
 WAIT = 300  # seconds the browser sign-in may take
 
 
@@ -65,6 +74,19 @@ def load():
 
 def store(data):
     save_json(FILE, data)
+
+
+@contextlib.contextmanager
+def locked():
+    """Every write to FILE under this lock, so a compare and its store are one step."""
+    private_dir(STATE_DIR)
+    with private_open(LOCK) as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def generation():
+    return secrets.token_hex(8)
 
 
 def request(method, url, data=None, token=None):
@@ -91,16 +113,17 @@ def request(method, url, data=None, token=None):
 
 
 def tokens(data, reply):
-    """Takes a token reply into the stored data (Spotify may or may not send a new refresh token)."""
+    """data with a token reply taken in (Spotify may or may not send a new refresh token); not stored."""
     if not isinstance(reply, dict) or not reply.get("access_token"):
         raise Fail("failed")
+    data = dict(data)
     data["access_token"] = reply["access_token"]
     data["expires_at"] = time.time() + int(reply.get("expires_in") or 3600) - 60
     if reply.get("refresh_token"):
         data["refresh_token"] = reply["refresh_token"]
     if "scope" in reply:
         data["scope"] = reply["scope"]
-    store(data)
+    return data
 
 
 def access():
@@ -115,8 +138,16 @@ def access():
         raise Fail("expired")
     if status != 200:
         raise Fail(failure(status))
-    tokens(data, reply)
-    return data["access_token"]
+    fresh = tokens(data, reply)
+    with locked():
+        now = load()
+        # Disconnected or another account while Spotify answered: drop the late reply.
+        if now.get("generation") != data.get("generation") or not now.get("refresh_token"):
+            raise Fail("unconnected")
+        # Same account, but another refresh stored first: use this token, keep that file.
+        if now.get("refresh_token") == data["refresh_token"]:
+            store(fresh)
+    return fresh["access_token"]
 
 
 def failure(status):
@@ -128,11 +159,14 @@ def library(method, uri):
         raise Fail("failed")
     url = API + "/me/library" + ("/contains" if method == "GET" else "") + "?uris=" + urllib.parse.quote(uri)
     for attempt in (1, 2):
-        status, reply = request(method, url, token=access())
+        token = access()
+        status, reply = request(method, url, token=token)
         if status == 401 and attempt == 1:  # revoked early: one fresh token, then give up
-            data = load()
-            data.pop("access_token", None)
-            store(data)
+            with locked():
+                data = load()
+                if data.get("access_token") == token:  # not one stored since
+                    data.pop("access_token")
+                    store(data)
             continue
         break
     if status != 200:
@@ -195,9 +229,11 @@ def connect(client_id):
         "client_id": client_id, "code_verifier": verifier})
     if status != 200:
         raise Fail(failure(status))
-    tokens({"client_id": client_id}, reply)
-    if not load().get("refresh_token"):
+    data = tokens({"client_id": client_id, "generation": generation()}, reply)
+    if not data.get("refresh_token"):
         raise Fail("failed")
+    with locked():
+        store(data)
 
 
 METHODS = {"check": "GET", "save": "PUT", "remove": "DELETE"}
@@ -215,14 +251,11 @@ def main(args):
         elif cmd in METHODS and len(args) > 1:
             out(uri=args[1], saved=library(METHODS[cmd], args[1]))
         elif cmd == "disconnect":
-            data = load()
-            try:
-                os.remove(FILE)
-            except FileNotFoundError:
-                pass
-            # The Client ID is no secret: kept, so connecting again needs only the browser.
-            if data.get("client_id"):
-                store({"client_id": data["client_id"]})
+            with locked():
+                data = load()
+                # The Client ID is no secret: kept, so connecting again needs only the browser.
+                # The new generation retires every refresh still under way.
+                store({"generation": generation(), **({"client_id": data["client_id"]} if data.get("client_id") else {})})
             out(connected=False)
         else:
             out(error="usage")

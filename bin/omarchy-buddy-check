@@ -18,8 +18,9 @@
 #    (tests/live --warten, only with "updateCheck": true in
 #    ~/.config/omarchy-buddy/config.json after an update), the result as a news item from O-Morchy.
 #    Did the live test after an update fail only while something real was on
-#    the island (tests/live exit 3: a real request, a real pop-up, away or
-#    fullscreen), no news item: check.gestoert in the state folder counts it,
+#    the island (tests/live exit 3: a real request, a real pop-up, the view
+#    opened by you, away or fullscreen; the test stops there and acts only on
+#    its own test things, see tests/live), no news item: check.gestoert in the state folder counts it,
 #    and the next --rueckfall runs the check again. The third disturbed run in
 #    a row reports.
 #

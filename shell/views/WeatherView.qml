@@ -298,7 +298,7 @@ Column {
     InputField {
       id: searchField
       width: parent.width
-      height: Theme.s(36)
+      fieldHeight: Theme.s(36)
       placeholder: Theme.t("weather.search")
       onAccepted: view.weather.search(text)
     }

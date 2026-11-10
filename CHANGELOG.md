@@ -3,6 +3,46 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.3.1 – 2026-11-10
+
+Fixes from the review for plugins.omarchy.org:
+
+- **Cover art from the net is fetched with limits** (#251): a music
+  player's cover (MPRIS `artUrl`) was loaded by Qt itself, without a limit
+  on size or time. Now a helper fetches it: https only (also after at most
+  3 redirects), at most 4 MB within 10 s, only PNG, JPEG or WebP up to
+  4096 px a side; the island shows the checked private file or the
+  placeholder. Covers over plain http are no longer shown.
+- **Pasting into a text field is bounded** (#252): Ctrl+V, Shift+Insert and
+  the middle button fetch the text with `wl-paste`, at most 64 KB within
+  2 s, and insert it only if the field is still as it was. More than that
+  pastes nothing and says "Too much to paste".
+- **Disconnecting Spotify cannot be undone by a late answer** (#253):
+  connect, disconnect and token refresh share a lock and a generation; a
+  token that arrives for a disconnected or replaced account is dropped. The
+  island says "disconnected" only once it is.
+- **Held-back pop-ups stay finite** (#254): while you are away, in
+  fullscreen or with the island open, waiting pop-ups fold as before; at
+  most 10 that stay (critical ones, reminders) are kept single, older ones
+  become one "N important notifications". A summary keeps 4 names and the
+  total as a number, a pop-up's text is cut at 2000 characters.
+- **Every background helper ends** (#255, #259): settings, weather, news,
+  sessions, Spotify and "Ask AI" run their helpers with a deadline, a
+  limit on their output and an answer even when they cannot start; a
+  failure shows as a line you can retry ("check now" says "didn't work").
+- **The live test touches only its own things** (#256): `tests/live` (also
+  after an Omarchy update with `"updateCheck": true`) and `tests/gallery`
+  act only on their own test notifications, sessions and requests, in every
+  view, and stop as soon as something real arrives or you open the island.
+- **No credentials in the process list** (#257): the git update watcher
+  leaves a clone alone whose remote URL (as git uses it) carries a user
+  name, password or token, instead of handing it to `git-remote-https`.
+- **Orca: only a hint** (#258): a new Orca release is a news item with a
+  link to it; the buddy no longer downloads or runs Orca's AppImage.
+- **No instructions for coding agents in the plugin**: `AGENTS.md` and
+  `CLAUDE.md`, which we use while developing it, are no longer part of
+  what `omarchy plugin add` installs.
+
 ## 1.3.0 – 2026-11-10
 
 - **"Ask AI" on error notifications** (#235): a critical notification

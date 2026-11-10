@@ -200,7 +200,7 @@ variant() {  # name
   calm
   ipc omarchy-buddy open >/dev/null; shot "$name-5-gross"
   probe testSettingsPage true >/dev/null; shot "$name-6-einstellungen"
-  probe testScrollTo "$(L Quellen Sources)" >/dev/null; probe testClick "$(L Quellen Sources)" >/dev/null; sleep 0.3; probe testScrollTo "lightforge" >/dev/null; shot "$name-6-einstellungen-quellen"
+  probe testScrollTo "$(L Quellen Sources)" >/dev/null; probe testClick "$(L Quellen Sources)" view >/dev/null; sleep 0.3; probe testScrollTo "lightforge" >/dev/null; shot "$name-6-einstellungen-quellen"
   probe testSettingsPage false >/dev/null
   # Out of the history again; wait out its "Rückgängig", or the next open view shows it.
   ipc omarchy-buddy close >/dev/null; probe testForget >/dev/null; sleep 8.5
@@ -326,7 +326,10 @@ start_looks() {
     colors "$theme"
     shot "start-$theme-begruessung"
   done
-  [[ $(probe testClick "$(L "Probier’s aus" "Try it")") == ok ]] || echo "„$(L "Probier’s aus" "Try it")“ nicht gefunden" >&2
+  # "Probier’s aus" as its click does it (the test IPC only clicks the tests' own things, #256).
+  [[ $(ipc notifications dismissOne) == ok ]] || echo "Begrüßung nicht zu sehen" >&2
+  node -e 'for (const a of require("./tests/lib/load").load("IslandLogic.js").actionCommand("try", "", process.argv[1])) console.log(a)' \
+    "${LOOKS_LANG:-de}" | { mapfile -t try; "${try[@]}"; }
   shot "start-hell-probe"
   ipc omarchy-buddy open >/dev/null
   for theme in hell dunkel; do
@@ -362,8 +365,8 @@ ki_looks() {
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/agent-called"\n' "$box" >"$box/bin/omarchy-agent"
   chmod +x "$box/bin/omarchy-agent"
   gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
-    --method org.freedesktop.Notifications.Notify -- Backup 0 "" "Klicktest" "geheim-235" "[]" "{'urgency': <byte 2>}" 0 >/dev/null
-  sleep 1; probe testClick "$(L "Mit KI ansehen" "Ask AI")" >/dev/null; sleep 1.5
+    --method org.freedesktop.Notifications.Notify -- Buddy-Test 0 "" "Klicktest" "geheim-235" "[]" "{'urgency': <byte 2>}" 0 >/dev/null
+  sleep 1; probe testClick "$(L "Mit KI ansehen" "Ask AI")" "$(probe state | jq -r '.toast.key // ""')" >/dev/null; sleep 1.5
   if grep -q "data only" "$box/agent-called" 2>/dev/null && ! grep -q geheim-235 "$box/agent-called" \
       && grep -q geheim-235 "$XDG_RUNTIME_DIR"/omarchy-buddy/ai/note-*.txt; then echo "Klick: Agent gestartet, Text nur in der Datei"
   else echo "Klick: kein Agent oder Text im Auftrag" >&2; fi
