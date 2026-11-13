@@ -414,14 +414,23 @@ function buttons(actions) {
 
 // Omarchy's own toasts carry their click as a JSON argv (--exec of
 // omarchy-notification-send); it runs without a shell. Also takes the list
-// itself (an entry of omarchy-actions).
+// itself (an entry of omarchy-actions). At most maxArgv entries: Omarchy's
+// commands are a program and a few arguments.
+var maxArgv = 64
+
 function execArgv(text) {
   try {
     // A list kept in a QML property (the history's notes) comes back as a Qt
-    // sequence, which Array.isArray does not take for one (#262).
-    if (text && typeof text === "object" && !Array.isArray(text) && typeof text.length === "number") text = Array.prototype.slice.call(text)
+    // sequence, which Array.isArray does not take for one (#262). Its length is
+    // checked first: a plain object from the hint ({"length": 4e9}) would
+    // otherwise have slice walk every index and freeze the shell (#267).
+    if (text && typeof text === "object" && !Array.isArray(text)) {
+      var n = text.length
+      if (!(Number.isInteger(n) && n >= 1 && n <= maxArgv)) return null
+      text = Array.prototype.slice.call(text)
+    }
     var argv = Array.isArray(text) ? text : JSON.parse(String(text || ""))
-    if (!Array.isArray(argv) || !argv.length) return null
+    if (!Array.isArray(argv) || !argv.length || argv.length > maxArgv) return null
     for (var i = 0; i < argv.length; i++) if (typeof argv[i] !== "string") return null
     return argv[0] && argv[0].charAt(0) !== "-" ? argv : null
   } catch (e) { return null }

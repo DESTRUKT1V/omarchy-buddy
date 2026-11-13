@@ -3,6 +3,16 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.3.3 – 2026-11-13
+
+Fix from the review of 1.3.2 for plugins.omarchy.org:
+
+- **A command list is checked before it is read** (#267): Omarchy's
+  buttons on a notification run only a command of 1 to 64 parts; the
+  length is checked before the list is converted, also for a JSON list.
+  A stray `length` in the `omarchy-actions` hint can no longer freeze the
+  shell without a click.
+
 ## 1.3.2 – 2026-11-13
 
 Fixes from the review of 1.3.1 for plugins.omarchy.org, and two from use:

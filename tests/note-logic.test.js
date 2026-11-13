@@ -578,3 +578,18 @@ test("Omarchy-Knöpfe im Verlauf: argv als Qt-Liste (kein Array) zählt wie ein 
   assert.equal(L.execArgv({ length: 0 }), null)
   assert.equal(L.execArgv({}), null, "ohne length kein Befehl")
 })
+
+test("argv-Länge wird vor dem Umwandeln geprüft: fremdes length legt nichts lahm (#267)", () => {
+  const start = Date.now()
+  assert.equal(L.execArgv({ length: 4000000000 }), null, "riesig")
+  assert.equal(L.execArgv({ 0: "a", length: 2 ** 53 }), null)
+  assert.ok(Date.now() - start < 100, "sofort, ohne jeden Index abzugehen")
+  for (const length of [-1, 1.5, NaN, Infinity, "2", null]) assert.equal(L.execArgv({ 0: "ls", length }), null, String(length))
+  assert.deepEqual(L.execArgv({ 0: "ls", length: 1 }), ["ls"], "kleine Qt-Liste weiter ok")
+  const big = Array.from({ length: 64 }, (_, i) => "a" + i)
+  assert.deepEqual(L.execArgv(Object.assign({}, big, { length: 64 })), big, "64 Einträge gehen")
+  assert.equal(L.execArgv(Object.assign({}, big, { 64: "x", length: 65 })), null)
+  assert.equal(L.execArgv(JSON.stringify(big.concat("x"))), null, "aus JSON dieselbe Grenze")
+  assert.equal(L.execActions(JSON.stringify([{ label: "x", argv: { length: 4000000000 } }])), null, "Hint omarchy-actions")
+  assert.deepEqual(L.restoreHistory(JSON.stringify([{ key: "k", execActions: [{ label: "x", argv: { length: 4e9 } }] }]))[0].execActions, [], "Verlaufsdatei")
+})
