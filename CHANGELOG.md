@@ -3,6 +3,27 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.3.2 – 2026-11-13
+
+Fixes from the review of 1.3.1 for plugins.omarchy.org, and two from use:
+
+- **Pictures only from an allowlist** (#261): a cover, a notification's
+  picture and an app icon reach Qt only as a path, `file://` or
+  `image://`; an https cover only as the file the cover helper checked.
+  Anything else (an inline `data:` picture, http, `qrc:`, a relative name …)
+  is never handed to Qt, so it cannot get past the format and size checks.
+- **Pasting inserts only a complete text** (#260): the fetched text counts
+  only when `wl-paste` ended on its own with exit 0; after the time limit,
+  a signal or an error nothing is inserted, never a part.
+- **"Too much to paste" is shown** (#260): pasting more than the limit
+  shows this for 4 s under the field (also read out by a screen reader);
+  not when the clipboard is empty, the paste was cancelled or timed out.
+- **"N important notifications"** (#260): the summary of held-back pop-ups
+  is called that instead of "N critical notifications".
+- **Omarchy's buttons work in the history** (#262): "Open" and "Edit" on a
+  notification that went straight to the history (such as a screenshot)
+  run their command; before, only the pop-up's buttons did.
+
 ## 1.3.1 – 2026-11-10
 
 Fixes from the review for plugins.omarchy.org:

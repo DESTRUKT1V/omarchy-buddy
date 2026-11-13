@@ -25,13 +25,18 @@ test("Text säubern: Markup, Zeilenumbrüche, Entities", () => {
 })
 
 test("Bilder nur von diesem Rechner, nie aus dem Netz (B17)", () => {
-  assert.equal(L.isRemote("http://127.0.0.1:8766/app-icon.png"), true)
-  assert.equal(L.isRemote("https://x.org/a.png"), true)
-  assert.equal(L.isRemote("ftp://x.org/a.png"), true)
-  assert.equal(L.isRemote("file:///tmp/a.png"), false)
-  assert.equal(L.isRemote("image://icon/dialog-information"), false)
-  assert.equal(L.isRemote("/tmp/a.png"), false)
-  assert.equal(L.isRemote("firefox"), false)
+  assert.equal(L.localPicture("http://127.0.0.1:8766/app-icon.png"), "")
+  assert.equal(L.localPicture("https://x.org/a.png"), "")
+  assert.equal(L.localPicture("ftp://x.org/a.png"), "")
+  assert.equal(L.localPicture("data:image/png;base64,iVBORw0KGgo="), "", "#261: inline nie an Qt")
+  assert.equal(L.localPicture("qrc:/a.png"), "")
+  assert.equal(L.localPicture("a.png"), "")
+  assert.equal(L.localPicture("file://"), "")
+  assert.equal(L.localPicture("file:///tmp/a.png"), "file:///tmp/a.png")
+  assert.equal(L.localPicture("/tmp/a.png"), "file:///tmp/a.png")
+  assert.equal(L.localPicture("image://icon/dialog-information"), "image://icon/dialog-information")
+  assert.equal(L.localPicture("firefox"), "", "ein Name ist kein Bild")
+  assert.equal(note({ image: "data:image/png;base64,iVBORw0KGgo=" }).image, "", "#261")
   assert.equal(note({ image: "http://x.org/a.png" }).image, "")
   assert.equal(note({ imageHint: "https://x.org/a.png" }).image, "")
   // Cover vom Player (MPRIS) bleibt
@@ -563,4 +568,13 @@ test("Mit KI ansehen: was der Agent bekommt, aus Pop-up und Verlauf gleich (#235
   const untitled = note({ app: "backup", summary: "", body: "Platte voll", urgency: 2 })
   assert.deepEqual(JSON.parse(L.aiInput(L.noteToast(untitled))), { sender: "backup", title: "Platte voll", text: "" })
   assert.deepEqual(JSON.parse(L.aiInput(untitled)), { sender: "backup", title: "Platte voll", text: "" })
+})
+
+test("Omarchy-Knöpfe im Verlauf: argv als Qt-Liste (kein Array) zählt wie ein Array (#262)", () => {
+  const qtList = { 0: "xdg-open", 1: "/tmp/a.png", length: 2 }
+  assert.deepEqual(L.execArgv(qtList), ["xdg-open", "/tmp/a.png"])
+  assert.equal(L.execArgv({ 0: 1, length: 1 }), null, "nur Zeichenketten")
+  assert.equal(L.execArgv({ 0: "-x", length: 1 }), null, "keine Option vorn")
+  assert.equal(L.execArgv({ length: 0 }), null)
+  assert.equal(L.execArgv({}), null, "ohne length kein Befehl")
 })

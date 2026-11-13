@@ -46,8 +46,8 @@ Scope {
 
   function iconOf(n) {
     var icon = String(n.appIcon || "")
-    if (NoteLogic.isRemote(icon)) return ""
-    if (icon.indexOf("/") !== -1 || icon.indexOf("://") !== -1) return NoteLogic.fileUrl(icon)
+    // A path or an address: only one on this machine (NoteLogic.localPicture, #261); else a theme name.
+    if (icon.indexOf("/") !== -1 || icon.indexOf(":") !== -1) return NoteLogic.localPicture(icon)
     var names = [icon, String(n.desktopEntry || ""), String(n.appName || "").toLowerCase()]
     for (var i = 0; i < names.length; i++) {
       if (!names[i]) continue

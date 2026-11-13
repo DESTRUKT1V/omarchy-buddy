@@ -161,7 +161,7 @@ const FILE = "file:///run/user/1000/omarchy-buddy/covers/0123456789abcdef0123456
 
 test("Cover: Bilder vom Rechner unverändert, aus dem Netz nur als geprüfte Datei", () => {
   assert.equal(L.coverSource("file:///tmp/a.png", {}), "file:///tmp/a.png")
-  assert.equal(L.coverSource("/tmp/a.png", {}), "/tmp/a.png")
+  assert.equal(L.coverSource("/tmp/a.png", {}), "file:///tmp/a.png")
   assert.equal(L.coverSource("image://qsimage/1", {}), "image://qsimage/1")
   assert.equal(L.coverSource("", {}), "")
   assert.equal(L.coverSource("https://i.scdn.co/image/ab", {}), "", "noch nicht geladen: Platzhalter")
@@ -170,6 +170,9 @@ test("Cover: Bilder vom Rechner unverändert, aus dem Netz nur als geprüfte Dat
   assert.equal(L.coverSource("http://example.com/a.png", {}), "", "http nie direkt")
   assert.equal(L.coverSource("ftp://example.com/a.png", {}), "")
   assert.equal(L.coverSource("HTTPS://example.com/a.png", {}), "")
+  // #261: an allowlist, not "everything without ://"
+  for (const u of ["data:image/png;base64,iVBORw0KGgo=", "data:image/svg+xml,<svg/>", "qrc:/a.png", "a.png", "javascript:x", "file://", "image://"])
+    assert.equal(L.coverSource(u, { [u]: { path: FILE, at: 1 } }), "", u)
 })
 
 test("Cover: nur https wird geholt, einmal, nach Fehler erst später wieder", () => {

@@ -161,12 +161,15 @@ var coverRetryMs = 60000  // a failed cover is tried again after this, when show
 var coverKeep = 24        // covers remembered (the helper keeps more files)
 var coverQueueMax = 4     // waiting at once; the newest win
 
-// What Image gets for a picture's address: one on this machine (a path,
-// file://, image://) as it is; one on the net only as its checked file, "" until then.
+// What Image gets for a picture's address, by an allowlist (#261): one on
+// this machine (a path, file://, image://) as it is; an https one only as
+// its checked file, "" until then; anything else (data:, http, qrc:, a
+// relative name …) never.
 function coverSource(url, known) {
   url = String(url || "")
-  if (url.indexOf("://") === -1 || /^(file|image):\/\//i.test(url)) return url
-  var k = known[url]
+  if (url.charAt(0) === "/") return "file://" + url
+  if (/^(file|image):\/\/./i.test(url)) return url
+  var k = /^https:\/\/[^\/]/i.test(url) ? known[url] : null
   return k && k.path ? k.path : ""
 }
 

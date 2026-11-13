@@ -38,11 +38,13 @@ function fileUrl(path) {
   return path.charAt(0) === "/" ? "file://" + path : path
 }
 
-// Pictures come from this machine only: an address on the net would tell
-// the sender when the notification is shown.
-function isRemote(url) {
-  url = String(url || "")
-  return url.indexOf("://") !== -1 && !/^(file|image):\/\//i.test(url)
+// Pictures come from this machine only, by an allowlist (#261): a path,
+// file:// or image://. An address on the net would tell the sender when the
+// notification is shown and Qt loads it without limits; an inline data:
+// picture (or any other scheme) would reach Qt's decoder unchecked. "" else.
+function localPicture(url) {
+  url = fileUrl(url)
+  return /^(file|image):\/\/./i.test(url) ? url : ""
 }
 
 // Messages from people: "chat" (a speech bubble on the app icon), "mail"
@@ -142,8 +144,7 @@ function makeNote(raw, key, time) {
   var app = String(raw.app || "")
   // Quickshell hands image-path as image://icon/<path or name>: a file is
   // the picture, a theme name (notify-send -i) is the icon.
-  var image = fileUrl(raw.image || raw.imageHint)
-  if (isRemote(image)) image = ""
+  var image = localPicture(raw.image || raw.imageHint)
   var icon = String(raw.icon || "")
   if (image.indexOf("image://icon/") === 0) {
     var rest = image.slice(13)
@@ -416,6 +417,9 @@ function buttons(actions) {
 // itself (an entry of omarchy-actions).
 function execArgv(text) {
   try {
+    // A list kept in a QML property (the history's notes) comes back as a Qt
+    // sequence, which Array.isArray does not take for one (#262).
+    if (text && typeof text === "object" && !Array.isArray(text) && typeof text.length === "number") text = Array.prototype.slice.call(text)
     var argv = Array.isArray(text) ? text : JSON.parse(String(text || ""))
     if (!Array.isArray(argv) || !argv.length) return null
     for (var i = 0; i < argv.length; i++) if (typeof argv[i] !== "string") return null
