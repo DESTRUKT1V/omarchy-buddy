@@ -1,6 +1,7 @@
 .pragma library
 .import "Strings.js" as Strings
 .import "ProbeLogic.js" as ProbeLogic
+.import "SessionLogic.js" as SessionLogic
 
 // Desktop notifications: turning what a sender sent into a plain record,
 // what pops up (Ruhemodus), bundling per sender and the history. Pure
@@ -45,6 +46,33 @@ function fileUrl(path) {
 function localPicture(url) {
   url = fileUrl(url)
   return /^(file|image):\/\/./i.test(url) ? url : ""
+}
+
+// The app icon's candidates, best first (#281): for a web notification the
+// icon of the site's .desktop (a Discord web app sends as "Chromium"), then
+// the sender's own icon and desktop entry, the icons of the .desktop files
+// found for the entry and the app's name, last the app's name in small
+// letters as a theme name. Orca sends no icon, and the theme name "orca" is
+// the screen reader; its .desktop (orca-ide, StartupWMClass=orca) has one.
+// Paths and addresses only as pictures of this machine (localPicture, #261).
+function iconCandidates(n) {
+  var names = [n.siteIcon, n.icon, n.entry, n.entryIcon, n.appEntryIcon, String(n.app || "").toLowerCase()]
+  var out = []
+  for (var i = 0; i < names.length; i++) {
+    var name = String(names[i] || "")
+    if (/[\/:]/.test(name)) name = localPicture(name)
+    if (name && out.indexOf(name) === -1) out.push(name)
+  }
+  return out
+}
+
+// The .desktop whose name is the sender's, in any case ("Claude" is
+// com.anthropic.Claude.desktop), or null.
+function namedEntry(entries, name) {
+  name = String(name || "").toLowerCase()
+  for (var i = 0; name && i < (entries || []).length; i++)
+    if (String(entries[i].name || "").toLowerCase() === name) return entries[i]
+  return null
 }
 
 // Messages from people: "chat" (a speech bubble on the app icon), "mail"
@@ -121,8 +149,10 @@ function webActions(actions) {
 
 // What the mark says to a screen reader, and a row's name with it.
 function kindName(kind, lang) { return kind ? Strings.tl(lang, "kind." + kind) : "" }
-function noteName(note, lang) {
+// `bare`: a row inside its app's bundle, which names the app already (#369).
+function noteName(note, lang, bare) {
   var kind = kindName(note.kind, lang)
+  if (bare) return (kind ? kind + ": " : "") + titleOf(note)
   return senderOf(note) + (kind ? ", " + kind : "") + ": " + titleOf(note)
 }
 
@@ -130,12 +160,36 @@ function isMedia(app, category) {
   return /spotify/i.test(String(app || "")) || /music/i.test(String(category || ""))
 }
 
+// A message that wants to be gone within 3 s by itself (notify-send -t 1500
+// "Audio" …) is a hint for the moment: it only pops up (#368). Not 0 (never)
+// or -1 (the server's choice), nothing critical, nothing from people or the
+// calendar (kind), nothing that brings a button, a reply field or a command.
+var briefLimit = 3000
+function isBrief(n) {
+  return n.expire > 0 && n.expire <= briefLimit && n.urgency !== 2 && !n.kind
+    && !buttons(n.actions).length && n.reply !== true && !execArgv(n.exec) && !(n.execActions || []).length
+}
+
+// Orca reports its agents as "<repo> / <worktree> - <Agent> <status>"
+// ("finished", "needs input", "working", "failed", "stopped", in Orca's
+// language). The agent (a key of SessionLogic.agents) when the island knows
+// it by name or key (Orca: "GitHub Copilot", "OMP"), else "": "Update bereit",
+// or an agent the island cannot show ("Amp finished").
+function orcaAgent(app, summary) {
+  var m = /^orca$/i.test(String(app || "")) ? /^.+ - (?:GitHub )?(.+)$/.exec(String(summary || "")) : null
+  var rest = m ? m[1].toLowerCase() : ""
+  for (var id in SessionLogic.agents)
+    if (rest.indexOf(SessionLogic.agents[id].name.toLowerCase() + " ") === 0 || rest.indexOf(id + " ") === 0) return id
+  return ""
+}
+
 // The record for one notification. `raw` holds what Notifications.qml read
 // off the live object: app, summary, body, image, imageHint (image-path),
 // icon (already resolved), category, entry (desktop entry), glyph, exec,
 // execActions (the hint omarchy-actions), urgency, expire, actions [{id, text}],
 // reply, replyHint, transient, sync (the hint x-canonical-private-synchronous
-// or x-dunst-stack-tag) and, for music, the MPRIS player (trackArtUrl, trackTitle, trackArtist) or null.
+// or x-dunst-stack-tag) and, for music, the MPRIS player (trackArtUrl, trackTitle, trackArtist) or null;
+// agents: the agents the island has a session of right now.
 //
 // A sync tag (volume, brightness ...) makes a running display: each message
 // replaces the last one with the same tag instead of bundling with it, on
@@ -171,10 +225,13 @@ function makeNote(raw, key, time) {
   var kind = media ? "" : web && web.kind || messageKind(app, raw.entry, raw.category)
   if (player && player.trackArtUrl) image = player.trackArtUrl
   if (player && player.trackTitle) { summary = player.trackTitle; body = player.trackArtist || "" }
+  var actions = web ? webActions(raw.actions) : raw.actions || []
+  var brief = !media && isBrief({ expire: Number(raw.expire || 0), urgency: Number(raw.urgency), kind: kind, actions: actions,
+                                  reply: raw.reply, exec: raw.exec, execActions: commands })
   return { key: key, app: app, summary: summary, body: body, icon: icon,
            image: image, glyph: String(raw.glyph || ""),
            exec: String(raw.exec || ""), execActions: commands, urgency: Number(raw.urgency), time: time,
-           expire: Number(raw.expire || 0), actions: web ? webActions(raw.actions) : raw.actions || [], reply: raw.reply === true,
+           expire: Number(raw.expire || 0), actions: actions, reply: raw.reply === true,
            replyHint: String(raw.replyHint || ""), media: media,
            site: site,
            kind: kind,
@@ -183,9 +240,11 @@ function makeNote(raw, key, time) {
            replaces: media || sync !== "",
            // A running display (volume, brightness) only pops up; so does
            // Omarchy's feedback, unless it brings buttons (a saved recording).
-           ephemeral: raw.transient === true || (app === "omarchy-action" && !commands.length) || sync !== "",
-           // Orca's "Claude finished" is what O-Morchy reports itself.
-           seen: /^orca$/i.test(app) && /claude/i.test(summary),
+           brief: brief,
+           ephemeral: raw.transient === true || (app === "omarchy-action" && !commands.length) || sync !== "" || brief,
+           // Orca's "Claude finished" is what the island reports itself, while
+           // it has a session of that agent: no pop-up, no history (#368).
+           seen: (raw.agents || []).indexOf(orcaAgent(app, summary)) !== -1,
            group: media ? app : sync ? app + "\nsync:" + sync : app + "\n" + (site ? site + "\n" : "") + summary }
 }
 
@@ -218,6 +277,7 @@ function aiInput(item) {
 //   normal   - 8 s (longer if the app asks, at most 30 s)
 //   low      - history only (Omarchy's feedback toasts excepted)
 //   music    - 3 s, never in the history (the player window shows it, #139)
+//   brief    - 3 s, never in the history, also a low one (isBrief, #368)
 // Ruhemodus (or a shared screen) lets only critical ones and Omarchy's
 // feedback through; Claude's requests always win over all of them. the user's
 // rule for the app (SettingsLogic.appRule) comes on top: "historyOnly"
@@ -230,14 +290,17 @@ function popsUp(note, silent, rule) {
 }
 
 // Whether the history keeps it at all: not Omarchy's feedback toasts and
-// transient ones, not music (#139), not an app the user ignores. Without
+// transient or brief ones, not music (#139), not Orca's status of an agent
+// the island shows (seen), not an app the user ignores. Without
 // `rule`: whether a pop-up leaves anything behind.
 function kept(note, rule) {
-  return !note.ephemeral && !note.media && rule !== "ignore"
+  return !note.ephemeral && !note.seen && !note.media && rule !== "ignore"
 }
 
+// A brief one asked for 3 s at most and gets 3 s, the shortest the island
+// shows anything (music): its own 1.5 s is gone before it is read.
 function toastDuration(note) {
-  return note.media ? 3000 : note.app === "omarchy-action" && note.ephemeral ? 5000 : Math.min(30000, Math.max(8000, note.expire))
+  return note.media || note.brief ? 3000 : note.app === "omarchy-action" && note.ephemeral ? 5000 : Math.min(30000, Math.max(8000, note.expire))
 }
 
 // Without a title the text takes its place, so the app name does not stand twice.
@@ -340,11 +403,61 @@ function groups(notes, lastRead, readIds) {
   for (var i = 0; i < notes.length; i++) {
     var n = notes[i]
     var g = byGroup[n.group]
-    if (!g) { g = byGroup[n.group] = { group: n.group, note: n, count: 0, unread: false }; list.push(g) }
+    if (!g) { g = byGroup[n.group] = { group: n.group, note: n, count: 0, unread: false, unreadCount: 0, critical: false }; list.push(g) }
     g.count++
-    if (isUnread(n, lastRead, readIds)) g.unread = true
+    if (isUnread(n, lastRead, readIds)) { g.unread = true; g.unreadCount++ }
+    if (n.urgency === 2) g.critical = true
   }
   return list
+}
+
+// One level above (#369): from bundleFrom rows of one app on, the app gets a
+// single row that unfolds them. Rows count, not messages: three mails from
+// one person are one row already, and a bundle around a single row would
+// only add a click. A website in a browser (note.site) is an app of its own.
+// `open`: bundle key → true (the view's state). → sections in the order of
+// the rows, a bundle where its newest row stood: {key, bundled, open, name,
+// note (newest), count (messages), unreadCount, critical, mixed (its rows are
+// of different kinds: chat, mail …), groups (all its rows), rows (the ones to show)}.
+var bundleFrom = 3
+function bundleKey(note) { return note.app + "\n" + (note.site || "") }
+
+function bundles(groups, open) {
+  var byApp = {}, list = []
+  for (var i = 0; i < groups.length; i++) {
+    var key = bundleKey(groups[i].note)
+    ;(byApp[key] = byApp[key] || []).push(groups[i])
+  }
+  for (var j = 0; j < groups.length; j++) {
+    var g = groups[j], k = bundleKey(g.note), all = byApp[k]
+    var bundled = all.length >= bundleFrom
+    if (bundled && all[0] !== g) continue
+    var mine = bundled ? all : [g], isOpen = !bundled || !!(open && open[k])
+    var s = { key: bundled ? k : g.group, bundled: bundled, open: isOpen, name: senderOf(g.note), note: g.note,
+              count: 0, unreadCount: 0, critical: false, mixed: false, groups: mine, rows: isOpen ? mine : [] }
+    for (var m = 0; m < mine.length; m++) {
+      s.count += mine[m].count
+      s.unreadCount += mine[m].unreadCount
+      if (mine[m].critical) s.critical = true
+      if ((mine[m].note.kind || "") !== (g.note.kind || "")) s.mixed = true
+    }
+    list.push(s)
+  }
+  return list
+}
+
+// A bundle row's second line: its newest message, title and text in one line.
+function bundlePreview(note, lang) {
+  var title = titleOf(note), text = textOf(note).replace(/\s+/g, " ").trim()
+  return text ? Strings.tl(lang, "bundle.preview", title, text) : title
+}
+
+// What a screen reader says for it: "Orca, 12 Meldungen, 3 ungelesen, zugeklappt".
+function bundleName(s, lang) {
+  return s.name + ", " + Strings.tl(lang, "toast.many", s.count)
+    + (s.unreadCount ? ", " + Strings.tl(lang, "a11y.unreadCount", s.unreadCount) : "")
+    + (s.critical ? ", " + Strings.tl(lang, "a11y.urgent") : "")
+    + ", " + Strings.tl(lang, s.open ? "a11y.unfolded" : "a11y.folded")
 }
 
 // "Rückgängig" after deleting: the removed records come back in their place,
@@ -364,13 +477,14 @@ function capped(notes) {
 }
 
 // The history file after a shell start. Live objects died with the old
-// shell: no actions, no replies. Music from before #139 goes. Null when the
+// shell: no actions, no replies. Music from before #139 and Orca's status of
+// an agent from before #368 (only that was ever `seen`) go. Null when the
 // file holds no list.
 function restoreHistory(raw) {
   var list = []
   try { list = JSON.parse(raw) } catch (e) { list = [] }
   if (!Array.isArray(list)) return null
-  return list.filter(function(o) { return o && o.key && !o.media }).map(function(o) {
+  return list.filter(function(o) { return o && o.key && !o.media && !o.seen }).map(function(o) {
     o.actions = []; o.reply = false; o.execActions = execActions(JSON.stringify(o.execActions || null)) || []
     o.time = Number(o.time || 0); o.urgency = Number(o.urgency || 1)
     if (o.kind === undefined) o.kind = o.media ? "" : messageKind(o.app)  // kept before #123

@@ -49,8 +49,11 @@ fallback_only=0 retry=0
 if [[ ${1-} == --rueckfall ]]; then
   if [[ -e $retry_file ]] && has_service && shell_up; then
     # tests/live --warten may wait two hours for a quiet moment: not inside the feed's run.
+    # Its own unit: the feed service is oneshot, systemd kills its cgroup (a setsid child too) when it ends.
     if [[ -z ${OMARCHY_BUDDY_CHECK_DETACHED-} ]]; then
-      OMARCHY_BUDDY_CHECK_DETACHED=1 setsid -f "$0" --rueckfall </dev/null >/dev/null 2>&1
+      systemd-run --user --quiet --collect --setenv=OMARCHY_BUDDY_CHECK_DETACHED=1 \
+          "$repo/bin/omarchy-buddy-check" --rueckfall </dev/null >/dev/null 2>&1 ||
+        OMARCHY_BUDDY_CHECK_DETACHED=1 setsid -f "$repo/bin/omarchy-buddy-check" --rueckfall </dev/null >/dev/null 2>&1
       exit 0
     fi
     retry=1

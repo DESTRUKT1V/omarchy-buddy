@@ -56,16 +56,25 @@ Row {
         spacing: Theme.s(6)
         Item {
           // Not the children's `visible`: they read false while this is hidden.
-          visible: toastIcon.status === Image.Ready || toastMark.kind !== ""
+          readonly property bool picture: toastIcon.status === Image.Ready || toastInitial.shown
+          visible: picture || toastMark.kind !== ""
           width: Theme.s(22); height: width
           anchors.verticalCenter: parent.verticalCenter
           AppIcon { id: toastIcon; source: view.note ? view.item.icon || "" : ""; size: parent.width }
+          // Without an icon (none, not one still loading) the sender's letter circle (#282).
+          Initial {
+            id: toastInitial
+            readonly property bool shown: view.note && (toastIcon.status === Image.Null || toastIcon.status === Image.Error) && text !== ""
+            visible: shown
+            name: view.note ? NoteLogic.senderOf(view.item) : ""
+            size: parent.width
+          }
           KindMark {
             id: toastMark
             kind: view.note ? view.item.kind || "" : ""
             size: Theme.s(16)
-            // Without an icon the mark stands in its place.
-            anchors { right: parent.right; bottom: parent.bottom; margins: toastIcon.status === Image.Ready ? -Theme.s(4) : 0 }
+            // Without a picture the mark stands in its place.
+            anchors { right: parent.right; bottom: parent.bottom; margins: parent.picture ? -Theme.s(4) : 0 }
           }
         }
         Label {

@@ -29,11 +29,26 @@
 #   tests/looks DIR ki       only "Mit KI ansehen" (#235): a critical pop-up
 #                        with the button, its row in the history, the setting
 #                        (with and without a default agent), in the theme and a light one
+#   tests/looks DIR icons    only the app icons (#281): a pop-up each from Beeper,
+#                        discord, Mailspring, Discord as a web app (Chromium),
+#                        an unknown sender and Orca (no icon, its .desktop
+#                        has one), then the history; then senders without an
+#                        icon and agent news in every level (#282: letter
+#                        circles), in the theme and a
+#                        light one (the real ~/.local/share/applications and
+#                        icons linked in, read only)
+#   tests/looks DIR fuerdich only "Für dich" full (#283): a request, mails, a chat and
+#                        a warning, then after "alle erledigt" with "Rückgängig",
+#                        undone, and with only the request left (no link), in the
+#                        theme and a light one
+#   tests/looks DIR buendel  only the app bundles (#369): 12 from Orca, 4 mails and a
+#                        single one, folded and unfolded, in "Für dich" and under
+#                        "Nachrichten", in the theme and a light one
 #   LOOKS_LANG=en tests/looks DIR …   the texts in English (default German)
 #   LOOKS_ZOOM=1.05 tests/looks DIR …  a fixed zoom (default automatic; for a headless FALLBACK monitor)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start || $2 == ki ) ) ]] || { sed -n '2,30p' "$0"; exit 1; }
+[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start || $2 == ki || $2 == icons || $2 == fuerdich || $2 == buendel ) ) ]] || { sed -n '2,48p' "$0"; exit 1; }
 mode=${2-}
 out=$(realpath -m "$1")
 mkdir -p "$out"
@@ -86,6 +101,10 @@ git -c init.defaultBranch=main init -q "$box/home/.local/share/owntool" && git -
 git -C "$box/home/.local/share/owntool" config core.pager "less -R"
 mkdir -p "$box/home/.local/state/omarchy-buddy"
 echo '{"git_updates": {"~/lightforge": "git"}}' >"$box/home/.local/state/omarchy-buddy/feed.json"
+# The user's own .desktop files and icons (Orca's are there), read only.
+if [[ $mode == icons ]]; then
+  for d in applications icons; do [[ -d $HOME/.local/share/$d ]] && ln -s "$HOME/.local/share/$d" "$box/home/.local/share/$d"; done
+fi
 # "Mit KI ansehen" needs a default agent (#235).
 [[ $mode == ki ]] && mkdir -p "$box/home/.config/omarchy/defaults" && echo claude >"$box/home/.config/omarchy/defaults/agent"
 if [[ $mode == start ]]; then mkdir -p "$box/home/.claude" "$box/home/.codex"
@@ -371,6 +390,106 @@ ki_looks() {
       && grep -q geheim-235 "$XDG_RUNTIME_DIR"/omarchy-buddy/ai/note-*.txt; then echo "Klick: Agent gestartet, Text nur in der Datei"
   else echo "Klick: kein Agent oder Text im Auftrag" >&2; fi
 }
+# App icons (#281): who sends, as a pop-up each, then the history.
+icons_looks() {
+  edge=top
+  local theme app body hints
+  ipc omarchy-buddy.looks bar true >/dev/null
+  for theme in dunkel hell; do
+    colors "$theme"
+    for app in Beeper discord Mailspring Chromium Unbekannt Orca; do
+      body=$(L "Bist du morgen dabei?" "Are you in tomorrow?") hints="{'urgency': <byte 1>}"
+      # A Discord web app: Chromium puts the site first (NoteLogic.webOrigin).
+      [[ $app == Chromium ]] && body="discord.com"$'\n\n'"$body" hints="{'urgency': <byte 1>, 'desktop-entry': <'chromium'>}"
+      ipc notifications dismissAll >/dev/null  # nothing of the sandbox's own in front
+      gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.Notify -- "$app" 0 "" "Lea Sommer" "$body" "[]" "$hints" -1 >/dev/null
+      shot "icons-$theme-popup-$app"
+    done
+    # Agent news in every level (#282: the letter circle and its level mark).
+    for level in info good warn error; do
+      bin/omarchy-buddy-say --source "$([[ $level == good || $level == info ]] && echo codex || echo claude)" --level "$level" \
+        --quiet --key "looks-282-$level" "$(L "Stufe" "Level") $level" >/dev/null
+    done
+    ipc omarchy-buddy open >/dev/null; shot "icons-$theme-verlauf"
+    # Only senders without an icon, so the agents' news fit below (#282).
+    ipc omarchy-buddy close >/dev/null; ipc notifications clear >/dev/null; sleep 8.5
+    for app in Unbekannt Ölwerk; do
+      gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.Notify -- "$app" 0 "" "Lea Sommer" "$(L "Bist du morgen dabei?" "Are you in tomorrow?")" "[]" "{}" -1 >/dev/null
+    done
+    ipc notifications dismissAll >/dev/null
+    ipc omarchy-buddy open >/dev/null; shot "icons-$theme-verlauf-ohne-icon"
+    ipc omarchy-buddy close >/dev/null; ipc notifications clear >/dev/null; sleep 8.5
+  done
+}
+# "Für dich" full, then "alle erledigt" and its "Rückgängig" (#283). Test senders
+# and a test key, so the test IPC may click the link (ProbeLogic.allows).
+fuerdich_looks() {
+  edge=top
+  local theme who
+  ipc omarchy-buddy.looks bar true >/dev/null
+  no_news
+  ask; sleep 1
+  for who in "Lea Sommer" "Tom Berger" "Mia Kraus" "Jonas Weber"; do
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify -- Buddy-Test 0 "" "$who" "$(L "Kurze Frage zum Angebot für Freitag" "Quick question about Friday's offer")" \
+      "[]" "{'urgency': <byte 1>, 'category': <'email.arrived'>}" -1 >/dev/null
+  done
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- Buddy-Test 0 "" "Sam" "$(L "Bist du morgen dabei?" "Are you in tomorrow?")" \
+    "[]" "{'urgency': <byte 1>, 'category': <'im.received'>}" -1 >/dev/null
+  bin/omarchy-buddy-say --source coding --level warn --quiet --key buddy-test-283 "$(L "Speicher fast voll" "Disk almost full")" "/home: 4 GB $(L frei free)" >/dev/null
+  ipc notifications dismissAll >/dev/null; calm
+  ipc omarchy-buddy open >/dev/null
+  for theme in dunkel hell; do colors "$theme"; shot "fuerdich-$theme-1-voll"; done
+  [[ $(probe testClick "$(L "Alles aus „Für dich“ nehmen" "Take everything out of “For you”")" forYou) == ok ]] || echo "„alle erledigt“ nicht klickbar" >&2
+  for theme in dunkel hell; do colors "$theme"; shot "fuerdich-$theme-2-erledigt"; done
+  [[ $(probe testClick "$(L Rückgängig Undo)" forYou) == ok ]] || echo "„Rückgängig“ nicht klickbar" >&2
+  for theme in dunkel hell; do colors "$theme"; shot "fuerdich-$theme-3-rueckgaengig"; done
+  probe testClick "$(L "Alles aus „Für dich“ nehmen" "Take everything out of “For you”")" forYou >/dev/null; sleep 8.5
+  for theme in dunkel hell; do colors "$theme"; shot "fuerdich-$theme-4-nur-anfrage"; done
+  unask
+}
+# App bundles (#369): 12 from Orca (a row per worktree), 4 mails and a single
+# one; folded, then each bundle unfolded; folded again after closing, a mixed one.
+buendel_looks() {
+  edge=top
+  local theme i who
+  send() {  # app title text [category]
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify -- "$1" 0 "" "$2" "$3" "[]" "{'urgency': <byte 1>${4:+, 'category': <'$4'>}}" -1 >/dev/null
+  }
+  fold() {  # app name: its bundle row
+    [[ $(probe testClick "$1," bundle) == ok ]] || echo "Bündel $1 nicht klickbar" >&2
+  }
+  ipc omarchy-buddy.looks bar true >/dev/null
+  no_news
+  send Signal "Ina" "$(L "Bis gleich!" "See you!")"
+  for i in $(seq 12 -1 1); do send Orca "companion / karte-$((360 + i)) - Amp finished" "$(L "Fertig nach $i min" "Done after $i min")"; done
+  for who in "Lea Sommer" "Tom Berger" "Mia Kraus" "Jonas Weber"; do
+    send Mailspring "$who" "$(L "Kurze Frage zum Angebot für Freitag" "Quick question about Friday's offer")" email.arrived
+  done
+  ipc notifications dismissAll >/dev/null; calm
+  ipc omarchy-buddy open >/dev/null
+  for theme in dunkel hell; do colors "$theme"; shot "buendel-$theme-1-zu"; done
+  fold Mailspring
+  for theme in dunkel hell; do colors "$theme"; shot "buendel-$theme-2-fuer-dich-auf"; done
+  fold Mailspring; fold Orca
+  for theme in dunkel hell; do colors "$theme"; shot "buendel-$theme-3-nachrichten-auf"; done
+  # Closing folds them all; then a bundle of mixed kinds with a picture of a message's own.
+  ipc omarchy-buddy close >/dev/null; sleep 0.5
+  send Mischpost "Lea Sommer" "$(L "Bist du morgen dabei?" "Are you in tomorrow?")" im.received
+  send Mischpost "Tom Berger" "$(L "Kurze Frage zum Angebot für Freitag" "Quick question about Friday's offer")" email.arrived
+  gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify -- Mischpost 0 "" "Mia Kraus" "$(L "Foto vom Freitag" "Photo from Friday")" "[]" \
+    "{'urgency': <byte 1>, 'category': <'im.received'>, 'image-path': <'$LOOKS_WALLPAPER'>}" -1 >/dev/null
+  ipc notifications dismissAll >/dev/null; calm
+  ipc omarchy-buddy open >/dev/null
+  for theme in dunkel hell; do colors "$theme"; shot "buendel-$theme-4-neu-geoeffnet-zu"; done
+  fold Mischpost
+  for theme in dunkel hell; do colors "$theme"; shot "buendel-$theme-5-gemischt-auf"; done
+}
 # Every variant of the island (no mode given).
 all_looks() {
   edge=top
@@ -392,6 +511,6 @@ all_looks() {
   ipc omarchy-buddy.looks radius 10 >/dev/null
   variant "dunkel-rund"
 }
-case $mode in wetter) weather_looks ;; start) start_looks ;; ki) ki_looks ;; *) all_looks ;; esac
+case $mode in wetter) weather_looks ;; start) start_looks ;; ki) ki_looks ;; icons) icons_looks ;; fuerdich) fuerdich_looks ;; buendel) buendel_looks ;; *) all_looks ;; esac
 grep -iE 'error|warn' "$box/log" | grep -v 'portal' >&2 || true
 echo "Fotos in $out"

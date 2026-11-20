@@ -3,6 +3,38 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.4.0 – 2026-11-20
+
+New since 1.3.3: a calmer history and an icon for every sender.
+
+- **Brief notifications only pop up** (#368): a notification that asks to
+  be gone within 3 s (`notify-send -t 1500 …`) pops up for 3 s and is not
+  kept in the history; in do-not-disturb and while you share the screen it
+  is gone. Not for critical ones, chats, mail, appointments or anything
+  with a button or a reply field.
+- **Orca's agent status stays out** (#368): "… - Claude finished" and the
+  like get no pop-up and no history entry while the island shows a session
+  of that agent itself; old entries of this kind are removed. Orca's other
+  notifications stay.
+- **One line per app from 3 rows** (#369): in "For you" and in
+  "Messages", three or more rows of the same app become one line with
+  the count and the newest as a preview; a click unfolds them (without
+  repeating the app's icon and name). Bundles are folded again each time
+  the island opens.
+- **"mark all done" in "For you"** (#283): a button beside the title takes
+  everything out of "For you" at once, with "Undo" for 8 s. Nothing is
+  deleted, waiting agents stay, later notifications stay.
+- **App icon also from the .desktop file** (#281): senders whose name is
+  not an icon name (Orca, Beeper, Discord as a web app, Claude Desktop) now
+  show their icon in the pop-up and the history.
+- **A letter instead of a dot without an icon** (#282): a sender without
+  an icon shows its first letter in a coloured circle (same sender, same
+  colour), also on agents' news; the level of such news (error, warning,
+  good) is a small mark on the circle.
+- **The self-test's repeat finishes** (#284): after a failed self-test the
+  repeat runs as its own systemd unit instead of being ended with the feed
+  service, so its test pop-ups no longer come back every 15 min.
+
 ## 1.3.3 – 2026-11-13
 
 Fix from the review of 1.3.2 for plugins.omarchy.org:

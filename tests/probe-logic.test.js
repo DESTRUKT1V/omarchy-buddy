@@ -129,6 +129,28 @@ test("Test-IPC: Meldung nur, wenn sie und ihr ganzes Bündel dem Test gehören",
                "× löscht das Bündel mit der echten gleichnamigen Meldung")
 })
 
+test("Test-IPC: App-Bündel (#369): auf- und zuklappen immer, × nur über reine Testmeldungen", () => {
+  const mine = note("k1", "Buddy-Test"), real = note("k2", "Beeper")
+  assert.deepEqual(L.owner([{ marker: "bundle" }, {}]), { kind: "bundle" })
+  assert.equal(L.allows({ kind: "bundle" }, "bundle", ctx([real])), true, "zeigt nur")
+  assert.equal(L.allows({ kind: "bundle" }, "view", ctx([real])), false)
+  const x = L.owner([{ groups: ["Buddy-Test\ns"] }, { marker: "bundle" }])
+  assert.equal(x.kind, "groups", "das × vor der Zeile, in der es steht")
+  assert.equal(L.allows(x, "bundle", ctx([mine, real])), true)
+  assert.equal(L.allows(L.owner([{ groups: ["Buddy-Test\ns", "Beeper\ns"] }]), "bundle", ctx([mine, real])), false, "echte Meldung im Bündel")
+  assert.equal(L.allows(x, "history", ctx([mine])), false)
+})
+
+test("Test-IPC: alle erledigt (#283) nur, wenn „Für dich“ ganz dem Test gehört", () => {
+  const mine = note("k1", "Buddy-Test", { group: "lea" }), real = note("k2", "Beeper", { group: "lea" }), other = note("k3", "Beeper", { group: "tom" })
+  const block = (groups, news) => ({ notes: groups.map(g => ({ group: g })), news })
+  const own = { kind: "forYou" }
+  assert.equal(L.allows(own, "forYou", ctx([mine, other], { forYou: block(["lea"], [{ key: "buddy-test-n", time: 5 }]) })), true)
+  assert.equal(L.allows(own, "forYou", ctx([mine, real], { forYou: block(["lea"], []) })), false, "echte Meldung im selben Bündel")
+  assert.equal(L.allows(own, "forYou", ctx([mine], { forYou: block([], [{ key: "echt", time: 5 }]) })), false, "echte Neuigkeit")
+  assert.equal(L.allows(own, "view", ctx([mine], { forYou: block([], []) })), false)
+})
+
 test("Test-IPC: alle löschen und Rückgängig nur über reine Testmeldungen", () => {
   const mine = note("k1", "Buddy-Test"), real = note("k2", "Beeper")
   const hist = { kind: "history" }

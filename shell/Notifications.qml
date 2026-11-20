@@ -44,13 +44,25 @@ Scope {
     } catch (e) { return "" }
   }
 
-  function iconOf(n) {
-    var icon = String(n.appIcon || "")
-    // A path or an address: only one on this machine (NoteLogic.localPicture, #261); else a theme name.
-    if (icon.indexOf("/") !== -1 || icon.indexOf(":") !== -1) return NoteLogic.localPicture(icon)
-    var names = [icon, String(n.desktopEntry || ""), String(n.appName || "").toLowerCase()]
+  // Quickshell reads the .desktop files on first use, in the background (a
+  // few seconds): touched at start, so the first notification finds them.
+  readonly property int desktopFiles: DesktopEntries.applications.values.length
+
+  // The Icon= of the .desktop for a sender's name, entry or website, or "".
+  function entryIcon(name) {
+    name = String(name || "")
+    if (!name) return ""
+    var e = DesktopEntries.heuristicLookup(name) || NoteLogic.namedEntry(DesktopEntries.applications.values, name)
+    return e ? String(e.icon || "") : ""
+  }
+
+  // The order is NoteLogic.iconCandidates (#281); the first that is a picture or a known theme name.
+  function iconOf(n, site) {
+    var names = NoteLogic.iconCandidates({
+      siteIcon: entryIcon(site), icon: n.appIcon, entry: n.desktopEntry,
+      entryIcon: entryIcon(n.desktopEntry), appEntryIcon: entryIcon(n.appName), app: n.appName })
     for (var i = 0; i < names.length; i++) {
-      if (!names[i]) continue
+      if (names[i].indexOf("://") !== -1) return names[i]
       var path = Quickshell.iconPath(names[i], true)
       if (path) return path
     }
@@ -76,14 +88,16 @@ Scope {
     var actions = []
     for (var i = 0; i < n.actions.length; i++)
       actions.push({ id: String(n.actions[i].identifier), text: String(n.actions[i].text) })
+    var web = NoteLogic.webOrigin(app, n.desktopEntry, NoteLogic.plain(n.body), "")
     return NoteLogic.makeNote({
       app: app, summary: n.summary, body: n.body, image: n.image, imageHint: hint(n, "image-path"),
-      icon: iconOf(n), category: category, entry: n.desktopEntry, glyph: hint(n, "omarchy-glyph"), exec: hint(n, "omarchy-exec-argv"),
+      icon: iconOf(n, web ? web.site : ""), category: category, entry: n.desktopEntry, glyph: hint(n, "omarchy-glyph"), exec: hint(n, "omarchy-exec-argv"),
       execActions: hint(n, "omarchy-actions"),
       urgency: n.urgency, expire: n.expireTimeout, actions: actions, reply: n.hasInlineReply === true,
       replyHint: n.inlineReplyPlaceholder, transient: n.transient === true,
       sync: hint(n, "x-canonical-private-synchronous") || hint(n, "x-dunst-stack-tag"),
-      player: NoteLogic.isMedia(app, category) ? playerFor(app) : null
+      player: NoteLogic.isMedia(app, category) ? playerFor(app) : null,
+      agents: store.app.sessions.sessions.map(function(s) { return SessionLogic.agentOf(s.agent) })
     }, key, time)
   }
 
@@ -291,7 +305,9 @@ Scope {
     undoTimer.restart()
   }
 
-  function removeGroup(group) { removeNotes(notes.filter(function(o) { return o.group === group })) }
+  function removeGroup(group) { removeGroups([group]) }
+  // An app bundle's × (#369): all its rows at once.
+  function removeGroups(groups) { removeNotes(notes.filter(function(o) { return groups.indexOf(o.group) !== -1 })) }
 
   function clearNotes() { removeNotes(notes) }
 

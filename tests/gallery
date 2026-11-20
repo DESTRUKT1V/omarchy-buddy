@@ -169,6 +169,7 @@ cleanup() {
   probe testSharing false >/dev/null
   probe testSettingsPage false >/dev/null
   calm
+  probe testBundles false >/dev/null
   probe testEnd >/dev/null
   [[ $quiet == on ]] && ipc notifications setDnd on >/dev/null
   [[ $quiet == off ]] && ipc notifications setDnd off >/dev/null
@@ -197,6 +198,7 @@ trap 'exit 130' INT TERM
 # A real request or pop-up, the open view or you away: wait a minute, then give up.
 for ((i = 0; i < 60; i++)); do
   why=$(probe testBegin)
+  [[ $why == ok ]] && probe testBundles true >/dev/null  # the test's rows one by one, not in their app's bundle (#369)
   [[ $why == ok ]] && break
   ((i == 0)) && echo "Auf der Insel ist gerade etwas Echtes ($why) – ich warte bis zu einer Minute."
   sleep 1

@@ -12,7 +12,7 @@
 #      is held or no shell runs it writes nothing, not even the log.
 #   5. Live test failed after an update only while something real was on the
 #      island (tests/live exit 3, a stand-in): no news item, check.gestoert counts; --rueckfall
-#      runs it again (in the background); ok → the file goes; the third
+#      runs it again (its own systemd unit, setsid without one); ok → the file goes; the third
 #      disturbed run reports; a real failure and a run by hand report at once.
 # `sleep` is a stand-in too, so the waiting loops take no time.
 # Aufruf: tests/check-test.sh
@@ -29,7 +29,8 @@ check() {  # name, then the test command
 sandbox() {  # $1: what "omarchy-shell shell ping" answers, $2=kaputt: settings.json breaks after the setup,
             # $3: what busctl exits with (1: nobody holds the bus), $4: argument for omarchy-buddy-check,
             # $5: what tests/live exits with (then the check runs from a copy with a stand-in);
-            # $gestoert: check.gestoert before the run, $extra_env: one more VAR=value
+            # $gestoert: check.gestoert before the run, $extra_env: one more VAR=value,
+            # $kein_systemd: systemd-run fails
   rm -rf "$sb/home" "$sb/omarchy" "$sb/run" "$sb/aufrufe" "$sb/repo"
   stub=$sb/omarchy/bin
   mkdir -p "$sb/home/.config/omarchy" "$sb/home/.claude" "$stub" "$sb/run/quickshell/by-id/x"
@@ -42,9 +43,10 @@ sandbox() {  # $1: what "omarchy-shell shell ping" answers, $2=kaputt: settings.
   printf '#!/bin/sh\nexit 0\n' >"$stub/sleep"
   printf '#!/bin/sh\nexit 0\n' >"$stub/node"  # the contract tests pass
   printf '#!/bin/sh\necho %s\n' "$1" >"$stub/omarchy-shell"
-  for c in omarchy omarchy-restart-shell notify-send systemctl setsid; do
+  for c in omarchy omarchy-restart-shell notify-send systemctl setsid systemd-run; do
     printf '#!/bin/sh\necho "%s $*" >>%s/aufrufe\n' "$c" "$sb" >"$stub/$c"
   done
+  [[ -n ${kein_systemd-} ]] && printf 'exit 1\n' >>"$stub/systemd-run"  # no user systemd
   chmod +x "$stub"/*
   local env=(HOME=$sb/home XDG_STATE_HOME=$sb/home/.local/state XDG_CONFIG_HOME=$sb/home/.config
              XDG_RUNTIME_DIR=$sb/run OMARCHY_PATH=$sb/omarchy LC_ALL= LC_MESSAGES= LANG=de_DE.UTF-8)
@@ -138,9 +140,12 @@ gestoert= sandbox ok "" 0 --nach-update 1
 check "echter Fehler: Meldung sofort" grep -q '^error Update-Check: etwas hakt Pop-ups\.' <(news)
 check "echter Fehler: keine Merkdatei" test ! -e "$state/check.gestoert"
 gestoert=1 sandbox ok "" 0 --rueckfall 0
-check "--rueckfall mit Merkdatei: startet die Prüfung im Hintergrund" \
-  grep -q "^setsid -f .*/omarchy-buddy-check --rueckfall" <(calls)
+check "--rueckfall mit Merkdatei: startet die Prüfung als eigene systemd-Einheit (#284)" \
+  test "$(calls)" = "systemd-run --user --quiet --collect --setenv=OMARCHY_BUDDY_CHECK_DETACHED=1 $sb/repo/bin/omarchy-buddy-check --rueckfall"
 check "--rueckfall mit Merkdatei: wartet nicht selbst auf den Live-Test" test -z "$(news)" -a ! -e "$state/check.log"
+kein_systemd=1 gestoert=1 sandbox ok "" 0 --rueckfall 0
+check "--rueckfall mit Merkdatei, ohne User-systemd: setsid" \
+  grep -q "^setsid -f .*/omarchy-buddy-check --rueckfall" <(calls)
 extra_env=OMARCHY_BUDDY_CHECK_DETACHED=1 gestoert=1 sandbox ok "" 0 --rueckfall 0
 check "Wiederholung ok: Live-Test gelaufen" grep -qx 'live --warten' <(calls)
 check "Wiederholung ok: Merkdatei weg" test ! -e "$state/check.gestoert"

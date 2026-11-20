@@ -50,7 +50,7 @@ Column {
     }
     Label {
       id: chevron
-      x: Theme.s(16) - width / 2  // on the items' dots
+      x: Theme.s(23) - width / 2  // on the items' dots
       anchors.verticalCenter: parent.verticalCenter
       text: row.open ? "󰅀" : "󰅂"  // md-chevron-down, md-chevron-right
       color: Theme.muted
@@ -59,7 +59,7 @@ Column {
     }
     Label {
       id: rowLabel
-      x: Theme.s(32)  // with the items' titles
+      x: Theme.s(46)  // with the items' titles
       width: rowCount.x - x - Theme.s(8)
       anchors.verticalCenter: parent.verticalCenter
       text: row.text
@@ -157,23 +157,48 @@ Column {
                 anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Theme.s(12); rightMargin: Theme.s(12) }
                 spacing: Theme.s(12)
 
-                // A problem also by its shape (md-alert-circle, md-alert), not only the colour.
-                Rectangle {
-                  y: (senderLine.height - height) / 2
-                  width: Theme.s(8); height: width; radius: width / 2
-                  color: problemMark.visible ? "transparent" : Theme.levelColor(item.modelData.level)
-                  Label {
-                    id: problemMark
-                    visible: text !== ""
-                    anchors.centerIn: parent
-                    text: item.modelData.level === "error" ? "󰀨" : item.modelData.level === "warn" ? "󰀦" : ""
-                    color: Theme.levelColor(item.modelData.level)
-                    font.pixelSize: Theme.fBody
-                    Accessible.ignored: true  // the name says it
+                Item {
+                  width: Theme.s(22); height: width
+                  // An agent's news (#282): its letter circle instead of the dot, the
+                  // level (IslandLogic.levelMark) as a mark at its corner.
+                  Initial {
+                    id: agentInitial
+                    name: IslandLogic.agentName(item.modelData.source)
+                    size: parent.width
+                    Rectangle {
+                      visible: levelMark.text !== ""
+                      anchors { right: parent.right; bottom: parent.bottom; margins: -Theme.s(4) }
+                      width: Theme.s(12); height: width; radius: width / 2
+                      color: Theme.bg
+                      Label {
+                        id: levelMark
+                        anchors.centerIn: parent
+                        text: IslandLogic.levelMark(item.modelData.level)
+                        color: Theme.levelColor(item.modelData.level)
+                        font.pixelSize: Theme.s(11)
+                        Accessible.ignored: true  // the name says it
+                      }
+                    }
+                  }
+                  // A problem also by its shape (md-alert-circle, md-alert), not only the colour.
+                  Rectangle {
+                    visible: !agentInitial.visible
+                    x: (parent.width - width) / 2; y: (senderLine.height - height) / 2
+                    width: Theme.s(8); height: width; radius: width / 2
+                    color: problemMark.visible ? "transparent" : Theme.levelColor(item.modelData.level)
+                    Label {
+                      id: problemMark
+                      visible: text !== ""
+                      anchors.centerIn: parent
+                      text: item.modelData.level === "error" ? "󰀨" : item.modelData.level === "warn" ? "󰀦" : ""
+                      color: Theme.levelColor(item.modelData.level)
+                      font.pixelSize: Theme.fBody
+                      Accessible.ignored: true  // the name says it
+                    }
                   }
                 }
                 Column {
-                  width: parent.width - Theme.s(20)
+                  width: parent.width - Theme.s(34)
                   spacing: Theme.s(2)
                   // Where it comes from as a sender line, the time on the right (#193, B6: no "Coding · 17:14").
                   Item {

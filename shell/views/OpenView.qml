@@ -2,7 +2,6 @@ import QtQuick
 import "../theme"
 import "../components"
 import "../SettingsLogic.js" as SettingsLogic
-import "../IslandLogic.js" as IslandLogic
 
 // Click on the island: greeting, the gear and the Ruhemodus switch, then
 // "Für dich" (what the user can act on now, #175), the other sessions,
@@ -19,10 +18,10 @@ Column {
   Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
   width: Theme.openWidth
   spacing: Theme.s(14)
-  readonly property real since: IslandLogic.forYouSince(app.now)
-  readonly property var forYou: IslandLogic.forYou(app.notifications.groups, app.notifications.notes, app.news.items,
-                                                   app.prefs.doneUpTo, app.prefs.doneIds, since)
-  readonly property bool hasForYou: app.sessions.needsCount > 0 || forYou.notes.length > 0 || forYou.news.length > 0
+  readonly property var forYou: app.forYou
+  readonly property bool toDo: forYou.notes.length > 0 || forYou.news.length > 0
+  // Also while "alle erledigt" can be undone, for its "Rückgängig".
+  readonly property bool hasForYou: app.sessions.needsCount > 0 || toDo || app.doneBefore !== null
   // Open again at the top, where what needs the user is; a long session list folds again.
   onShownChanged: if (shown) { list.contentY = 0; app.sessions.unfolded = false }
 
@@ -106,7 +105,15 @@ Column {
         visible: view.hasForYou
         width: parent.width
         spacing: Theme.s(8)
-        SectionTitle { text: Theme.t("forYou.title") }
+        // "alle erledigt" (#283) while there is something to take out, then "Rückgängig".
+        SectionTitle {
+          readonly property string probeOwner: "forYou"  // its link acts on the whole block (Probe.ownerOf)
+          readonly property bool undo: view.app.doneBefore !== null
+          text: Theme.t("forYou.title")
+          link: undo ? Theme.t("notes.undo") : view.toDo ? Theme.t("forYou.allDone") : ""
+          linkName: undo ? link : Theme.t("a11y.allDone")
+          onLinkClicked: undo ? view.app.undoAllDone() : view.app.markAllDone()
+        }
         SessionList { app: view.app; width: parent.width; forYou: true }
         NoteHistory { app: view.app; width: parent.width; forYou: true; groups: view.forYou.notes }
         NewsList { app: view.app; width: parent.width; forYou: true; items: view.forYou.news }

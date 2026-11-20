@@ -60,7 +60,8 @@ Overview: [Features](#features) · [Architecture](#architecture) ·
 - **For you**: at the top of the open view what you can act on now (agents
   waiting for you, mail, chats, event reminders, critical notifications and
   problems in the news), the rest below it. Each stays until you click it or
-  take it out with its ×, at most 24 hours.
+  take it out with its ×, at most 24 hours; "mark all done" beside the title
+  takes out all of them at once (with "Undo", waiting agents stay).
 - **Notification server**: replaces Omarchy's own (`org.freedesktop.Notifications`),
   bundles, keeps a history, answers Omarchy's `notifications` IPC so its key
   bindings keep working, do not disturb, quiet while you share the screen.
@@ -725,14 +726,18 @@ Omarchy sends with `omarchy-notification-send --action` (hint
 
 Behaviour: critical stays until you click it away; normal 8 s (longer if the
 app asks, at most 30 s); low goes only into the history; Spotify 3 s, with
-only the current track in the history. Notifications from the same app and
-sender are bundled into one pop-up; with more than three waiting there is a
-summary. In do-not-disturb and while sharing the screen (unless the setting
+only the current track in the history. A notification that asks to be gone
+within 3 s (and is not critical, from a chat, mail or calendar, and has no
+button or reply field) pops up for 3 s and is not kept. Notifications from
+the same app and sender are bundled into one pop-up; with more than three
+waiting there is a summary. In the history, three or more rows of one app
+become one line that unfolds on a click. Orca's status of an agent
+("… - Claude finished") is dropped while the island shows that agent itself. In do-not-disturb and while sharing the screen (unless the setting
 is "nothing"), only Claude requests, critical notifications and Omarchy's
 own feedback ("Screenshot saved") pop up, everything else goes quietly into
-the history. Notifications with `x-canonical-private-synchronous` (volume,
+the history (a brief one is gone). Notifications with `x-canonical-private-synchronous` (volume,
 brightness) replace the previous one with the same tag. What only matters in
-the moment (volume, Omarchy's feedback, transient notifications, songs) is
+the moment (volume, Omarchy's feedback, transient and brief notifications, songs) is
 dropped instead of waiting for you while you are away or the island is open. Critical pop-ups
 survive a shell restart (`popups.json`, without the app's buttons).
 "×" (or a right click) dismisses a pop-up. What was on screen as a pop-up

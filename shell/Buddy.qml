@@ -121,6 +121,9 @@ Item {
 
   readonly property var unread: IslandLogic.unread(news.items, notifications.notes, prefs.lastRead, prefs.readIds)
   readonly property bool unreadProblem: IslandLogic.hasProblem(unread)
+  // "Für dich" (#175): the open view's block, also for "alle erledigt" and the test IPC.
+  readonly property var forYou: IslandLogic.forYou(notifications.groups, notifications.notes, news.items,
+                                                   prefs.doneUpTo, prefs.doneIds, IslandLogic.forYouSince(now))
   readonly property int hour: new Date(now * 1000).getHours()
   // The texts' language (Strings.js): config.json, otherwise Omarchy's
   // choice, otherwise the system's.
@@ -260,6 +263,27 @@ Item {
     prefs.doneIds = IslandLogic.addRead(prefs.doneIds, ids, Math.max(prefs.doneUpTo, IslandLogic.forYouSince(now)))
     prefs.save()
   }
+
+  // "alle erledigt" (#283): all of "Für dich" but the waiting agents is done;
+  // can be undone for a few seconds, like deleting from the history.
+  property var doneBefore: null
+  function markAllDone() {
+    doneBefore = { doneUpTo: prefs.doneUpTo, doneIds: prefs.doneIds }
+    setDone(IslandLogic.allDone(forYou, prefs.doneUpTo, prefs.doneIds))
+    allDoneUndo.restart()
+  }
+  function undoAllDone() {
+    if (!doneBefore) return
+    setDone(IslandLogic.allUndone(doneBefore, prefs.doneIds))
+    doneBefore = null
+    allDoneUndo.stop()
+  }
+  function setDone(d) {
+    prefs.doneUpTo = d.doneUpTo
+    prefs.doneIds = d.doneIds
+    prefs.save()
+  }
+  Timer { id: allDoneUndo; interval: 8000; onTriggered: buddy.doneBefore = null }
 
   // A pop-up the user had on screen is read.
   function markToastRead(t) {

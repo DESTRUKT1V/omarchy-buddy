@@ -957,6 +957,43 @@ def check_many_actions(run):
     clear_screen()
 
 
+def bundle_row(lay=None):
+    """The test's app bundle row in the open view (#369), or None."""
+    return next((i for i in (lay or layout())["items"] if i["name"].startswith(TEST_APP + ", ")), None)
+
+
+def check_bundle(run):
+    """Three rows of one app fold into one bundle row; a click unfolds them and folds them again."""
+    clear_screen()
+    titles = [f"Bündel {run} {c}" for c in "abc"]
+    for t in titles:
+        notify(t, "Text", urgency=0)
+    wait_for(lambda s: all(find_note(s, t) for t in titles))
+    clear_screen()
+    try:
+        probe("testBundles", "false")
+        view(True)
+        row = bundle_row(layout([TEST_APP + ", "]))
+        folded = bool(row) and row["name"].endswith(("zugeklappt", "collapsed"))
+        check("Bündel: ab 3 Zeilen einer App eine Zeile, zugeklappt", folded, f"Zeile {row}")
+        click("bundle", TEST_APP + ", ")
+        lay = layout()
+        row = bundle_row(lay)
+        check("Bündel: Klick klappt auf", bool(row) and row["name"].endswith(("aufgeklappt", "expanded")), f"Zeile {row}")
+        check_reach("Bündel: aufgeklappt alles erreichbar", lay)
+        click("bundle", TEST_APP + ", ")
+        row = bundle_row()
+        check("Bündel: Klick klappt wieder zu", bool(row) and row["name"].endswith(("zugeklappt", "collapsed")), f"Zeile {row}")
+        click("bundle", TEST_APP + ", ")
+        view(False)
+        view(True)
+        row = bundle_row(layout([TEST_APP + ", "]))
+        check("Bündel: nach Schließen und Öffnen wieder zu", bool(row) and row["name"].endswith(("zugeklappt", "collapsed")), f"Zeile {row}")
+    finally:
+        view(False)
+        probe("testBundles", "true")
+
+
 def check_history(run, clear_all):
     """A long message unfolds in the history; "alle löschen", empty state, undo."""
     clear_screen()
@@ -1229,6 +1266,8 @@ def begin(patient):
         if not why:
             r = ipc("omarchy-buddy.test", "testBegin")
             why = "" if r == "ok" else WHY.get(r, f"Test-IPC antwortet {r!r}")
+            if r == "ok":
+                probe("testBundles", "true")  # the test's rows show one by one, as the checks expect (#369)
         if not why or time.monotonic() >= end:
             return why
         time.sleep(5 if patient else 1)
@@ -1272,6 +1311,7 @@ def main():
             check_feelings(run)
             check_many_actions(run)
             check_omarchy_45(run)
+            check_bundle(run)
             check_history(run, clear_all=not args.warten)
             check_omarchy_ipc()
             check_emotes()
@@ -1286,7 +1326,7 @@ def main():
         stopped = WHY.get(str(e), str(e))
         report("Test abgebrochen, nur die eigenen Testsachen aufgeräumt", "fehler", f"(dabei: {stopped})")
     finally:
-        for method, *a in (("testForget",), ("testSettings", ""), ("testSpotify", ""), ("testOpen", "false"), ("testEnd",)):
+        for method, *a in (("testForget",), ("testBundles", "false"), ("testSettings", ""), ("testSpotify", ""), ("testOpen", "false"), ("testEnd",)):
             ipc("omarchy-buddy.test", method, *a)
         if quiet:
             ipc("notifications", "setDnd", "on")

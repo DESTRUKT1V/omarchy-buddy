@@ -13,8 +13,19 @@ var sourceLabel = { system: "System", coding: "Coding", terminal: "Terminal",
 
 // A news item's source in a few letters ("mochi": O-Morchy's old name).
 function sourceName(source, lang) {
-  if (Object.prototype.hasOwnProperty.call(SessionLogic.agents, source)) return SessionLogic.agents[source].name
-  return sourceLabel[source] || Strings.tl(lang, "source.new")
+  return agentName(source) || sourceLabel[source] || Strings.tl(lang, "source.new")
+}
+
+// The agent a news item comes from ("Claude", "Codex" ...), "" for other
+// sources; its rows show the agent's letter circle (#282).
+function agentName(source) {
+  return Object.prototype.hasOwnProperty.call(SessionLogic.agents, source) ? SessionLogic.agents[source].name : ""
+}
+
+// The mark at an agent's letter circle that keeps a news item's level in
+// sight (md-alert-circle, md-alert, md-check-circle); none for info.
+function levelMark(level) {
+  return level === "error" ? "\udb80\udc28" : level === "warn" ? "\udb80\udc26" : level === "good" ? "\udb81\udde0" : ""
 }
 
 // The layer surface's height: what the view needs (island or player window
@@ -159,6 +170,38 @@ function inks(fg, bg, accent, urgent, light) {
            spotify: readable(hex(spotifyGreen), fg, 3, [bg, mix(bg, fg, 0.12)]) }
 }
 var spotifyGreen = "#1ed760"  // Spotify's brand green
+
+// A sender without an icon (#282): the first character of its name as a
+// capital, "" without a name. A whole character: an accent, an emoji's skin
+// tone or emoji form, a joined emoji or a flag stays with it; a capital that
+// would be two letters ("ß" → "SS") stays small.
+function initial(name) {
+  var cs = Array.from(String(name || "").trim().normalize("NFC"))
+  var first = cs[0] || ""
+  for (var i = 1; i < cs.length; i++) {
+    var c = cs[i].codePointAt(0), prev = cs[i - 1].codePointAt(0)
+    var flag = function(x) { return x >= 0x1f1e6 && x <= 0x1f1ff }
+    if (!((c >= 0x300 && c <= 0x36f) || c === 0xfe0f || c === 0x20e3 || (c >= 0x1f3fb && c <= 0x1f3ff)
+          || c === 0x200d || prev === 0x200d || (i === 1 && flag(c) && flag(prev)))) break
+    first += cs[i]
+  }
+  var up = first.toUpperCase()
+  return Array.from(up).length === Array.from(first).length ? up : first
+}
+
+// Its circle's colours, the same for the same name in any case (#282): one
+// of a few calm hues (no red: that means urgent), a tint of it over the
+// background as the circle and the hue, moved toward the text colour until
+// it reads at 4.5:1 there, as the letter. fg, bg as { r, g, b }.
+var initialHues = { dark: ["#e0b36a", "#9cc58a", "#76c2bd", "#8eaee8", "#b99ae6", "#e391bd"],
+                    light: ["#9a6512", "#3f7a34", "#1f7470", "#3a5fae", "#7149a8", "#a33a78"] }
+function initialInks(name, fg, bg, light) {
+  var s = String(name || "").toLowerCase(), h = 0
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  var hues = initialHues[light ? "light" : "dark"]
+  var hue = hex(hues[h % hues.length]), fill = mix(bg, hue, 0.3)
+  return { fill: fill, ink: readable(hue, fg, 4.5, [fill]) }
+}
 
 function pad2(n) { return (n < 10 ? "0" : "") + n }
 
@@ -310,6 +353,22 @@ function doneBy(item, notes) {
   for (var i = 0; i < notes.length; i++)
     if (notes[i].group === item.group && notes[i].time <= item.time) ids[notes[i].key] = notes[i].time
   return ids
+}
+
+// "alle erledigt" (#283): the whole block is done, up to its newest item.
+// Notifications and news get their time as they arrive, so one that comes
+// after the click stays; every pending one up to that time is in the block.
+// The waiting agents are not in it. → the new doneUpTo and doneIds.
+function allDone(block, doneUpTo, doneIds) {
+  var upTo = doneUpTo
+  for (var i = 0; i < block.notes.length; i++) upTo = Math.max(upTo, Number(block.notes[i].note.time || 0))
+  for (var j = 0; j < block.news.length; j++) upTo = Math.max(upTo, Number(block.news[j].time || 0))
+  return { doneUpTo: upTo, doneIds: addRead(doneIds, {}, upTo) }
+}
+
+// Its "Rückgängig": the state before the click, plus what × took out since.
+function allUndone(before, doneIds) {
+  return { doneUpTo: before.doneUpTo, doneIds: addRead(before.doneIds, doneIds, before.doneUpTo) }
 }
 
 // A news item's name for a screen reader: its level and whether it is unread

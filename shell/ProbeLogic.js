@@ -32,10 +32,12 @@ function isRecord(o) { return !!o && typeof o.key === "string" && o.key !== "" &
 // nearest first. Probe.qml reads each level as {marker (probeOwner), ask,
 // session, note, model (modelData)}. The answer: {kind: "session", id},
 // {kind: "note", id, item}, {kind: "history" | "view" | "player"} (marked
-// parts) or {kind: "none"}.
+// parts; "bundle": an app bundle's row, #369), {kind: "groups", groups} (the ×
+// of such a bundle: all its rows) or {kind: "none"}.
 function owner(levels) {
   for (var i = 0; i < levels.length; i++) {
     var l = levels[i]
+    if (l.groups) return { kind: "groups", groups: l.groups }
     if (l.marker) return { kind: String(l.marker) }
     var s = l.ask && l.ask.session && l.ask.session.id ? l.ask.session : l.session && l.session.id ? l.session : isSession(l.model) ? l.model : null
     if (s) return { kind: "session", id: String(s.id) }
@@ -46,13 +48,17 @@ function owner(levels) {
 }
 
 // May the test act on owner o? want: what the test means (a session id, a
-// record key, or "history", "view", "player"). c: {notes, removed, canUndo
-// (the history's link undoes), testPlayer}. Unknown owners never.
+// record key, or "history", "forYou", "bundle", "view", "player"). c: {notes, removed, canUndo
+// (the history's link undoes), forYou (IslandLogic.forYou), testPlayer}. Unknown owners never.
 function allows(o, want, c) {
   if (o.kind === "session") return o.id === want && isTestKey(o.id)
   if (o.kind === "note") return o.id === want && isTest(o.item)  // its whole bundle goes with it (×)
     && c.notes.every(function(n) { return n.group !== o.item.group || isTest(n) })
   if (o.kind === "history") return want === "history" && (c.canUndo ? c.removed : c.notes).every(isTest)
+  if (o.kind === "forYou") return want === "forYou" && c.forYou.news.every(isTest)  // "alle erledigt": the whole block
+    && c.notes.every(function(n) { return isTest(n) || !c.forYou.notes.some(function(g) { return g.group === n.group }) })
+  if (o.kind === "bundle") return want === "bundle"  // folding only shows, nothing changes
+  if (o.kind === "groups") return want === "bundle" && c.notes.every(function(n) { return o.groups.indexOf(n.group) === -1 || isTest(n) })
   if (o.kind === "player") return want === "player" && c.testPlayer === true
   return o.kind === "view" && want === "view"
 }

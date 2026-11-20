@@ -183,6 +183,52 @@ test("Kontrast: Zweittext, Rot, Akzent, fertig und Hintergrund in jedem Omarchy-
   }
 })
 
+test("Buchstaben-Kreis: Anfangsbuchstabe groß, ganze Zeichen, leer bleibt leer (#282)", () => {
+  assert.equal(L.initial("discord"), "D")
+  assert.equal(L.initial("  ölwerk"), "Ö")
+  assert.equal(L.initial("école"), "É")             // Akzent als eigenes Zeichen
+  assert.equal(L.initial("ßtadt"), "ß")                    // nicht „SS“
+  assert.equal(L.initial("👍🏽 Likes"), "👍🏽")               // mit Hautton
+  assert.equal(L.initial("❤️ Herz"), "❤️")                 // mit Emoji-Form
+  assert.equal(L.initial("👩‍💻 Dev"), "👩‍💻")               // verbundenes Emoji
+  assert.equal(L.initial("🇩🇪🇫🇷"), "🇩🇪")                  // eine Flagge
+  assert.equal(L.initial("1Password"), "1")
+  for (const empty of ["", "   ", null, undefined]) assert.equal(L.initial(empty), "")
+})
+
+test("Buchstaben-Kreis: gleiche Farbe für gleichen Absender, Buchstabe in jedem Omarchy-Theme ab 4,5:1 (#282)", () => {
+  const black = { r: 0, g: 0, b: 0 }, white = { r: 1, g: 1, b: 1 }
+  assert.deepEqual(L.initialInks("Discord", white, black, false), L.initialInks("discord", white, black, false))
+  // Claude und Codex (beide „C“) unterscheiden sich in der Farbe
+  assert.notDeepEqual(L.initialInks("Claude", white, black, false).fill, L.initialInks("Codex", white, black, false).fill)
+  // Namen, die jede Farbe der Palette treffen
+  const names = "abcdefghijklmnopqrstuvwxyz".split("")
+  assert.equal(new Set(names.map(n => JSON.stringify(L.initialInks(n, white, black, false).fill))).size, L.initialHues.dark.length)
+  const fs = require("node:fs"), path = require("node:path")
+  const dirs = ["/usr/share/omarchy/themes", path.join(process.env.HOME || "", ".config/omarchy/themes")]
+  const files = dirs.flatMap(d => fs.existsSync(d) ? fs.readdirSync(d).map(t => path.join(d, t, "colors.toml")) : [])
+    .filter(f => fs.existsSync(f))
+  const themes = files.map(f => [f, themeColors(f)]).concat([["schwarz", { fg: white, bg: black }], ["weiß", { fg: black, bg: white }]])
+  for (const [file, t] of themes) {
+    const light = L.isLight(t.bg.r, t.bg.g, t.bg.b)
+    for (const n of names) {
+      const k = L.initialInks(n, t.fg, t.bg, light)
+      assert.ok(L.contrast(k.ink, k.fill) >= Math.min(4.5, L.contrast(t.fg, k.fill)) - 1e-9, `${file} ${n}: ${L.contrast(k.ink, k.fill).toFixed(2)}`)
+    }
+  }
+})
+
+test("Agent-News: Name nur für Agenten, Stufe als Zeichen am Kreis (#282)", () => {
+  assert.equal(L.agentName("claude"), "Claude")
+  assert.equal(L.agentName("codex"), "Codex")
+  assert.equal(L.agentName("system"), "")
+  assert.equal(L.agentName("constructor"), "")
+  assert.equal(L.sourceName("github", "de"), "GitHub")
+  for (const level of ["error", "warn", "good"]) assert.notEqual(L.levelMark(level), "")
+  assert.equal(new Set(["error", "warn", "good"].map(L.levelMark)).size, 3)
+  assert.equal(L.levelMark("info"), "")
+})
+
 test("Rosé Pine (hell): Rot bleibt rot, nicht Mauve wie der Zweittext (#187)", () => {
   const rgb = hex => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 })
   const fg = rgb("#575279"), bg = rgb("#faf4ed"), accent = rgb("#56949f"), own = rgb("#b4637a")
@@ -367,6 +413,30 @@ test("Für dich (#175, #178): Menschen, Termine, Kritisches und Probleme bleiben
   assert.equal(L.forYou([{ group: "nas", note: one[0] }], one, [], 0, {}, L.forYouSince(now)).notes.length, 1)
   const done = L.addRead({}, { x: old }, L.forYouSince(now))
   assert.equal(L.forYou([{ group: "nas", note: one[0] }], one, [], 0, done, L.forYouSince(now)).notes.length, 0)
+})
+
+test("Für dich: alle erledigt (#283) bis zum neuesten im Block, Neueres bleibt, Rückgängig", () => {
+  const n = (key, group, time, kind) => ({ key, group, time, kind, urgency: 1 })
+  const notes = [n("m2", "mail", 90, "mail"), n("c1", "chat", 80, "chat"), n("m1", "mail", 70, "mail"), n("a1", "app", 95, "")]
+  const groups = [{ group: "mail", note: notes[0] }, { group: "chat", note: notes[1] }, { group: "app", note: notes[3] }]
+  const news = [{ title: "kaputt", level: "error", time: 60 }, { title: "grün", level: "good", time: 99 }]
+  const before = { "news:5": 5, c1: 80, x: 200 }
+  const block = L.forYou(groups, notes, news, 0, { c1: 80 }, 0)
+  const d = L.allDone(block, 0, before)
+  // Up to the newest in the block (not the plain notification or the good news after it).
+  assert.equal(d.doneUpTo, 90)
+  assert.deepEqual(d.doneIds, { x: 200 }, "what doneUpTo covers leaves doneIds")
+  const after = L.forYou(groups, notes, news, d.doneUpTo, d.doneIds, 0)
+  assert.deepEqual([after.notes, after.news], [[], []])
+  // A mail after the click stays.
+  const later = [n("m3", "mail", 91, "mail")].concat(notes)
+  assert.deepEqual(L.forYou([{ group: "mail", note: later[0] }], later, [], d.doneUpTo, d.doneIds, 0).notes.length, 1)
+  // An empty block changes nothing; doneUpTo never goes back.
+  assert.deepEqual(L.allDone({ notes: [], news: [] }, 50, { k: 60 }), { doneUpTo: 50, doneIds: { k: 60 } })
+  // Rückgängig: the state before, and what × took out meanwhile stays out.
+  const undone = L.allUndone({ doneUpTo: 0, doneIds: before }, Object.assign({ y: 120 }, d.doneIds))
+  assert.deepEqual(undone, { doneUpTo: 0, doneIds: { "news:5": 5, c1: 80, x: 200, y: 120 } })
+  assert.deepEqual(L.forYou(groups, notes, news, undone.doneUpTo, undone.doneIds, 0).notes.map(g => g.group), ["mail"])
 })
 
 test("Für dich erledigt (#178): Neuigkeit, Nachricht mit den früheren ihres Absenders", () => {

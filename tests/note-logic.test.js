@@ -24,6 +24,24 @@ test("Text säubern: Markup, Zeilenumbrüche, Entities", () => {
   assert.equal(L.plain('<a href="x">Link</a> <span class="y">z</span> <U>u</U>'), "Link z u")
 })
 
+test("App-Icon: Kandidaten der Reihe nach (#281)", () => {
+  const c = L.iconCandidates
+  assert.deepEqual(c({ icon: "mailspring", app: "Mailspring" }), ["mailspring"])
+  assert.deepEqual(c({ icon: "", entry: "", appEntryIcon: "orca-ide", app: "Orca" }), ["orca-ide", "orca"],
+    "Orca: erst das .desktop, der Theme-Name orca (Screenreader) nur zuletzt")
+  assert.deepEqual(c({ siteIcon: "discord", icon: "chromium", entry: "chromium", entryIcon: "chromium", app: "Chromium" }),
+    ["discord", "chromium"], "Web-App: das Icon der Seite vor dem des Browsers")
+  assert.deepEqual(c({ appEntryIcon: "/opt/x/icon.png", app: "X" }), ["file:///opt/x/icon.png", "x"], "Icon= als Pfad")
+  assert.deepEqual(c({ icon: "https://x.org/a.png", app: "Foo" }), ["foo"], "#261: nie aus dem Netz, weiter zum Namen")
+  assert.deepEqual(c({ icon: "file:///tmp/a.png", app: "Foo" }), ["file:///tmp/a.png", "foo"])
+  assert.deepEqual(c({}), [], "unbekannt: kein Icon wie bisher")
+  const entries = [{ name: "Claude", icon: "claude-desktop" }, { name: "Discord", icon: "discord" }]
+  assert.equal(L.namedEntry(entries, "claude").icon, "claude-desktop")
+  assert.equal(L.namedEntry(entries, "Claude Code"), null)
+  assert.equal(L.namedEntry(entries, ""), null)
+  assert.equal(L.namedEntry(undefined, "Claude"), null)
+})
+
 test("Bilder nur von diesem Rechner, nie aus dem Netz (B17)", () => {
   assert.equal(L.localPicture("http://127.0.0.1:8766/app-icon.png"), "")
   assert.equal(L.localPicture("https://x.org/a.png"), "")
@@ -67,8 +85,57 @@ test("Einordnen: Musik, Omarchys Rückmeldungen, Orcas „Claude finished“", (
   assert.equal(note({ app: "Beeper", player: player }).summary, "Tom")
   assert.equal(note({ app: "omarchy-action" }).ephemeral, true)
   assert.equal(note({ transient: true }).ephemeral, true)
-  assert.equal(note({ app: "Orca", summary: "companion / main - Claude finished" }).seen, true)
-  assert.equal(note({ app: "Orca", summary: "Update bereit" }).seen, false)
+})
+
+test("Kurz-Meldungen (#368): höchstens 3 s gewünscht → nur Pop-up, 3 s, kein Verlauf", () => {
+  const audio = note({ app: "notify-send", summary: "Audio", body: "🎧 LCD-3", expire: 1500 })
+  assert.deepEqual([audio.brief, audio.ephemeral, L.kept(audio, ""), L.popsUp(audio, false, ""), L.toastDuration(audio)],
+                   [true, true, false, true, 3000])
+  assert.equal(L.noteToast(audio).duration, 3000)
+  // auch eine leise kommt dann als Pop-up, im Ruhemodus gar nicht
+  assert.equal(L.popsUp(note({ app: "x", urgency: 0, expire: 1 }), false, ""), true)
+  assert.equal(L.popsUp(audio, true, ""), false)
+  const cases = [
+    [{ expire: 3000 }, true], [{ expire: 1 }, true],
+    [{ expire: 3001 }, false], [{ expire: 0 }, false], [{ expire: -1 }, false], [{ expire: undefined }, false],
+    [{ expire: 1500, urgency: 2 }, false],
+    [{ expire: 1500, actions: [{ id: "ok", text: "OK" }] }, false],
+    [{ expire: 1500, actions: [{ id: "default", text: "" }] }, true],
+    [{ expire: 1500, reply: true }, false],
+    [{ expire: 1500, exec: JSON.stringify(["xdg-open", "/tmp"]) }, false],
+    [{ expire: 1500, execActions: JSON.stringify([{ label: "Öffnen", argv: ["xdg-open", "/tmp"] }]) }, false],
+    // von Menschen und aus dem Kalender: immer in den Verlauf
+    [{ expire: 1500, app: "Beeper" }, false], [{ expire: 1500, app: "Thunderbird" }, false],
+    [{ expire: 1500, category: "im.received" }, false], [{ expire: 1500, app: "evolution-alarm-notify" }, false],
+    [{ expire: 1500, app: "Chromium", body: "mail.google.com\n\nHallo" }, false],
+  ]
+  for (const [fields, brief] of cases) {
+    const n = note(Object.assign({ app: "notify-send" }, fields))
+    assert.deepEqual([n.brief, L.kept(n, "")], [brief, !brief], JSON.stringify(fields))
+  }
+  assert.equal(L.toastDuration(note({ app: "notify-send", expire: 3001 })), 8000)
+})
+
+test("Orcas Status zu Agents (#368): nichts, solange die Insel den Agent selbst zeigt", () => {
+  const orca = (summary, agents, app) => note({ app: app || "Orca", summary: summary, agents: agents || ["claude", "codex"] })
+  const titles = ["companion / main - Claude finished", "companion / karte-368 - Codex needs input", "workspace - Claude working",
+                  "a - b / c - Codex fertig", "x - Claude failed", "x - Claude stopped"]
+  for (const t of titles) {
+    const n = orca(t)
+    assert.deepEqual([n.seen, L.kept(n, ""), L.popsUp(n, false, "")], [true, false, false], t)
+  }
+  // Orcas Namen: Name oder Schlüssel aus SessionLogic.agents
+  assert.deepEqual(["x - GitHub Copilot finished", "x - OMP finished", "x - OpenCode needs input", "x - Pi finished", "x - Command Code finished",
+                    "x - Amp finished", "x - Agent finished", "x - Claude", "Claude finished", "Update bereit", "Task complete in main", "Bell in main"]
+                     .map(t => L.orcaAgent("orca", t)),
+                   ["copilot", "omp", "opencode", "pi-agent", "commandcode", "", "", "", "", "", "", ""])
+  // ohne Sitzung dieses Agents (Hook nicht eingerichtet) ist Orcas Meldung die einzige: normal
+  for (const n of [orca("x - Codex finished", ["claude"]), orca("x - Claude finished", []), orca("x - Amp finished"),
+                   orca("Update bereit"), orca("x - Claude finished", ["claude"], "Slack")])
+    assert.deepEqual([n.seen, L.kept(n, ""), L.popsUp(n, false, "")], [false, true, true], n.summary)
+  assert.equal(note({ app: "Orca", summary: "x - Claude finished" }).seen, false)
+  // alte Einträge (vor #368 gespeichert, seen) gehen beim Laden
+  assert.deepEqual(L.restoreHistory(JSON.stringify([{ key: "a", app: "Orca", seen: true }, { key: "b", app: "Orca", seen: false }])).map(o => o.key), ["b"])
 })
 
 test("Ruhemodus-Regeln: was als Pop-up kommt", () => {
@@ -81,7 +148,7 @@ test("Ruhemodus-Regeln: was als Pop-up kommt", () => {
     [{ urgency: 0, app: "Spotify" }, true, false],
     [{ urgency: 2 }, true, true],
     [{ urgency: 1, app: "omarchy-action" }, true, true],
-    [{ app: "Orca", summary: "Claude finished" }, false, false],
+    [{ app: "Orca", summary: "companion / main - Claude finished", agents: ["claude"] }, false, false],
   ]
   for (const [fields, silent, pops] of cases)
     assert.equal(L.popsUp(note(fields), silent), pops, JSON.stringify(fields) + (silent ? " still" : ""))
@@ -592,4 +659,57 @@ test("argv-Länge wird vor dem Umwandeln geprüft: fremdes length legt nichts la
   assert.equal(L.execArgv(JSON.stringify(big.concat("x"))), null, "aus JSON dieselbe Grenze")
   assert.equal(L.execActions(JSON.stringify([{ label: "x", argv: { length: 4000000000 } }])), null, "Hint omarchy-actions")
   assert.deepEqual(L.restoreHistory(JSON.stringify([{ key: "k", execActions: [{ label: "x", argv: { length: 4e9 } }] }]))[0].execActions, [], "Verlaufsdatei")
+})
+
+test("App-Bündel (#369): ab 3 Zeilen einer App eine Zeile, darunter alles wie bisher", () => {
+  const notes = []
+  const add = (fields, key, time) => { const n = note(fields, key); n.time = time; notes.push(n) }
+  for (let i = 0; i < 12; i++) add({ app: "Orca", summary: "repo / karte-" + i + " - Amp finished", body: "fertig" }, "o" + i, 200 - i)
+  add({ app: "Mailspring", summary: "Lea", body: "Angebot\nfür Freitag", category: "email.arrived" }, "m1", 150)
+  add({ app: "Mailspring", summary: "Lea", category: "email.arrived" }, "m2", 149)
+  add({ app: "Mailspring", summary: "Lea", category: "email.arrived" }, "m3", 148)
+  add({ app: "Mailspring", summary: "Tom", category: "email.arrived", urgency: 2 }, "m4", 147)
+  add({ app: "Signal", summary: "Ina" }, "s1", 100)
+  const groups = L.groups(notes, 190)
+  let b = L.bundles(groups, {})
+  // 3 Mails von einer Person sind schon eine Zeile: 2 Zeilen von Mailspring bleiben einzeln
+  assert.deepEqual(b.map(s => [s.name, s.bundled, s.count, s.rows.length]),
+                   [["Orca", true, 12, 0], ["Mailspring", false, 3, 1], ["Mailspring", false, 1, 1], ["Signal", false, 1, 1]])
+  assert.equal(b[0].note.key, "o0", "Vorschau und Zeit: die neueste")
+  assert.equal(b[0].unreadCount, 10)
+  assert.equal(b[0].critical, false)
+  assert.equal(L.bundleName(b[0], "de"), "Orca, 12 Meldungen, 10 ungelesen, zugeklappt")
+  assert.equal(L.bundlePreview(b[0].note, "de"), "repo / karte-0 - Amp finished: fertig")
+  assert.equal(L.bundlePreview(notes[12], "de"), "Lea: Angebot für Freitag", "eine Zeile")
+  assert.equal(L.bundlePreview(note({ summary: "", body: "nur Text" }), "de"), "nur Text")
+  // aufgeklappt: die bisherigen Zeilen darunter; eine neue Meldung lässt es offen
+  b = L.bundles(groups, { [b[0].key]: true })
+  assert.deepEqual([b[0].open, b[0].rows.length, b[0].rows[0].note.key], [true, 12, "o0"])
+  add({ app: "Orca", summary: "neu" }, "o99", 300)
+  const again = L.bundles(L.groups(notes.slice().sort((x, y) => y.time - x.time), 190), { [b[0].key]: true })
+  assert.deepEqual([again[0].open, again[0].count, again[0].note.key], [true, 13, "o99"])
+  // dritte Zeile von Mailspring: Bündel an der Stelle der neuesten, dringend und ungelesen aus den Zeilen
+  add({ app: "Mailspring", summary: "Mia", category: "email.arrived" }, "m5", 191)
+  const mail = L.bundles(L.groups(notes.filter(n => n.app === "Mailspring" || n.app === "Signal").sort((x, y) => y.time - x.time), 190), {})
+  assert.deepEqual(mail.map(s => [s.name, s.bundled, s.count]), [["Mailspring", true, 5], ["Signal", false, 1]])
+  assert.equal(L.bundleName(mail[0], "en"), "Mailspring, 5 notifications, 1 unread, urgent, collapsed")
+  assert.equal(L.bundleName(Object.assign({}, mail[0], { open: true, unreadCount: 0, critical: false }), "de"), "Mailspring, 5 Meldungen, aufgeklappt")
+  // eine Seite im Browser ist eine eigene App
+  const web = ["a", "b", "c"].map((s, i) => note({ app: "Chromium", entry: "chromium", summary: s, body: "discord.com\n\nHi" }, "w" + i))
+    .concat(["d", "e"].map((s, i) => note({ app: "Chromium", entry: "chromium", summary: s, body: "web.whatsapp.com\n\nHi" }, "x" + i)))
+  assert.deepEqual(L.bundles(L.groups(web, 0), {}).map(s => [s.name, s.bundled]),
+                   [["Discord", true], ["WhatsApp", false], ["WhatsApp", false]])
+  assert.deepEqual(L.bundles([], {}), [])
+})
+
+test("App-Bündel (#369): Unterzeile ohne App im Namen, Art nur bei gemischten Arten", () => {
+  const mail = s => note({ app: "Mailspring", summary: s, category: "email.arrived" }, s)
+  const same = L.bundles(L.groups([mail("a"), mail("b"), mail("c")], 0), {})[0]
+  assert.equal(same.mixed, false)
+  const sys = (s, category) => note({ app: "Kiste", summary: s, category: category || "" }, s)
+  const mixed = L.bundles(L.groups([sys("a", "email.arrived"), sys("b", "email.arrived"), sys("u")], 0), {})[0]
+  assert.equal(mixed.mixed, true)
+  assert.equal(L.noteName(mail("Lea"), "de"), "Mailspring, E-Mail: Lea")
+  assert.equal(L.noteName(mail("Lea"), "de", true), "E-Mail: Lea")
+  assert.equal(L.noteName(note({ app: "Orca", summary: "fertig" }), "de", true), "fertig")
 })

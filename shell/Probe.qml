@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "ProbeLogic.js" as ProbeLogic
+import "NoteLogic.js" as NoteLogic
 import "theme"
 
 // The test IPC "omarchy-buddy.test" for tests/live and tests/gallery.
@@ -100,7 +101,11 @@ Scope {
 
   Connections {
     target: probe.app
-    function onOpenedChanged() { probe.viewByTest = probe.app.opened && probe.acting; probe.watch() }
+    function onOpenedChanged() {
+      probe.viewByTest = probe.app.opened && probe.acting
+      if (probe.app.opened && probe.bundlesOpen) probe.showBundles()
+      probe.watch()
+    }
     function onSettingsShownChanged() { probe.settingsByTest = probe.app.settingsShown && probe.acting; probe.watch() }
     function onPausedChanged() { probe.watch() }
   }
@@ -121,6 +126,18 @@ Scope {
     function onToastChanged() { probe.watch() }
     function onQueueChanged() { probe.watch() }
     function onHeldBackChanged() { probe.watch() }
+  }
+
+  // The test's bundle as testBundles asked for it, again on every opening.
+  property bool bundlesOpen: false
+  function showBundles() {
+    var key = NoteLogic.bundleKey({ app: ProbeLogic.testApp }), n = 0
+    function walk(item) {
+      if (item.toggleBundle && !!item.open[key] !== bundlesOpen) { item.toggleBundle(key); n++ }
+      for (var i = 0; i < item.children.length; i++) walk(item.children[i])
+    }
+    walk(island)
+    return n
   }
 
   function clearTest() {
@@ -162,7 +179,7 @@ Scope {
     var levels = []
     for (var p = item; p && p !== island; p = p.parent) {
       if (p === playerWindow) { levels.push({ marker: "player" }); break }
-      levels.push({ marker: p.probeOwner, ask: p.ask, session: p.session, note: p.note !== undefined ? p.note : p instanceof Loader ? null : p.item,
+      levels.push({ groups: p.probeGroups, marker: p.probeOwner, ask: p.ask, session: p.session, note: p.note !== undefined ? p.note : p instanceof Loader ? null : p.item,
                     model: p.modelData })
     }
     return ProbeLogic.owner(levels)
@@ -171,7 +188,7 @@ Scope {
   // May the test act on this item for `want` (ProbeLogic.allows)? Read at the moment of acting.
   function owned(item, want) {
     var n = app.notifications, player = app.player.current
-    return ProbeLogic.allows(ownerOf(item), want, { notes: n.notes, removed: n.removed, canUndo: n.canUndo,
+    return ProbeLogic.allows(ownerOf(item), want, { notes: n.notes, removed: n.removed, canUndo: n.canUndo, forYou: app.forYou,
       testPlayer: !!player && ProbeLogic.isTest({ app: String(player.identity) }) })
   }
 
@@ -293,7 +310,8 @@ Scope {
 
     // A click on the clickable thing with this name (exactly, or the first
     // one starting with it) that acts on `owner` (a test session's id, a test
-    // record's key, "history", "view" or "player"), as if the user clicked it.
+    // record's key, "history", "forYou", "bundle" (an app bundle's row or its ×,
+    // #369), "view" or "player"), as if the user clicked it.
     function testClick(name: string, owner: string): string {
       var why = probe.blocked()
       if (why) return why
@@ -385,6 +403,14 @@ Scope {
       probe.clearTest()
       for (var i = 0; i < groups.length; i++) store.removeGroup(groups[i])
       return String(groups.length)
+    }
+
+    // The test app's bundle (#369) unfolded or folded in "Für dich" and the
+    // history, also while they are hidden; only what the view shows. Unfolded
+    // it stays so over closing the island, which folds every bundle (Probe.showBundles).
+    function testBundles(on: bool): string {
+      probe.bundlesOpen = on
+      return String(probe.showBundles())
     }
 
     // The settings page in the open view, for the gallery (shows, changes nothing).
