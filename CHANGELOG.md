@@ -3,6 +3,31 @@
 Versions follow [Semantic Versioning](https://semver.org); the version lives in
 `manifest.json`.
 
+## 1.4.1 – 2026-11-20
+
+New since 1.4.0: news that say when something happened, and less routine
+among them.
+
+- **News show when it happened** (#373): the news list shows, sorts and
+  groups an item by the time of the event, not by when it arrived
+  (`"happened"` in `news.json`): a GitHub notification by its last activity,
+  your own item by `omarchy-buddy-say --time WHEN`. A late item stands under
+  its own day instead of on top as new. Unread, the pop-up and "For you"
+  still go by the arrival.
+- **An older day with something unread is open** (#373): when the island
+  opens, an older day that holds an unread item is unfolded; a day you fold
+  by hand stays folded until the island closes.
+- **Only the newest of a kind** (#373): `omarchy-buddy-say --key K --replace`
+  puts the new item in the place of the one listed under the same key. The
+  version news (one per program: Claude Code, Omarchy, Orca) and the morning
+  greeting use it.
+- **The update check only reports problems** (#373): a good result is in
+  `check.log` alone, no longer a news item; after a problem it says once
+  "Update check: island runs again".
+- **Old entries of these kinds are removed** (#373): the first feed run
+  after the update takes the old "Update check: island runs" items, older
+  version news per program and older morning greetings out of the news.
+
 ## 1.4.0 – 2026-11-20
 
 New since 1.3.3: a calmer history and an icon for every sender.

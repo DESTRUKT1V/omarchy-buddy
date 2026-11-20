@@ -11,7 +11,7 @@ Inspired by [Coucou](https://github.com/Louis-CFM/coucou) for macOS and its
 mascot Mochi – thank you! Omarchy-Buddy is a much smaller take on the idea for
 Omarchy.
 
-Version 1.2.0, see the [changelog](CHANGELOG.md).
+Versions: see the [changelog](CHANGELOG.md).
 
 ![O-Morchy in the bar beside the clock while Codex works](docs/bilder/1-leiste.webp)
 
@@ -572,8 +572,15 @@ has sent something.
 it at once): pending updates, full disks, failed services, crashes, new Claude Code
 and Omarchy versions, Orca releases (only with Orca installed: a hint with a
 link to the release, the buddy never downloads or installs Orca) and a morning
-greeting with your first name (from the system). The very first run only
-records the current state.
+greeting with your first name (from the system). Of the version news only the
+newest per program stays, of the morning greetings only the newest. The very
+first run only records the current state.
+
+The list shows, sorts and groups an item by when it happened (`"happened"` in
+`news.json`: a GitHub notification's last activity, `omarchy-buddy-say
+--time`), so a late item stands under its own day; unread, the pop-up and
+"For you" go by its arrival. An older day with something unread is unfolded
+when the island opens.
 
 Crashes are your own programs' core dumps since the last run (`coredumpctl`,
 read only), all of them in one item with the programs' names. A click hands
@@ -697,8 +704,12 @@ codex …) are not reported again, their own hooks do that. Terminals without
 a window of their own (tmux, the far side of ssh) are left out, as nobody can
 tell whether they are in front.
 
-Your own items: `omarchy-buddy-say [--level info|good|warn|error] [--url URL] [--quiet | --popup-only] TITLE [BODY]`
-(`--quiet`: only into the history; `--popup-only`: only a pop-up; `--stdin`
+Your own items: `omarchy-buddy-say [--level info|good|warn|error] [--url URL] [--key K [--replace]] [--time WHEN] [--quiet | --popup-only] TITLE [BODY]`
+(`--key`: skipped while an item with the same key is listed, with `--replace`
+it takes that item's place, so only the newest of its kind stays; `--time`:
+when it happened if not just now, epoch seconds or ISO 8601 such as
+`2026-11-17T14:05` (local time without a zone), a time in the future becomes
+now; `--quiet`: only into the history; `--popup-only`: only a pop-up; `--stdin`
 instead of TITLE and BODY: `{"title": …, "body": …}` as JSON on stdin, so a
 private text stays out of the process list).
 
@@ -808,8 +819,9 @@ update does not wait for it. Once the update and the shell restart are done:
 - after an update the bar's indicator list the setup wrote (Omarchy's list
   without do-not-disturb) follows Omarchy's current list
   (`omarchy-buddy-setup --indicators`); a list you changed by hand stays.
-- otherwise it runs the contract tests and O-Morchy reports the result as
-  news. With `"updateCheck": true` it also runs the live test (waiting until
+- otherwise it runs the contract tests. O-Morchy reports a problem as news
+  and, once after one, that the island runs again; a good result is in the
+  log alone. With `"updateCheck": true` it also runs the live test (waiting until
   you are at the PC; it shows real test pop-ups and simulated Claude
   requests on screen). It acts only on its own test pop-ups and requests,
   and stops at once when a real request or notification arrives, you open

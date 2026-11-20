@@ -30,7 +30,7 @@ sandbox() {  # $1: what "omarchy-shell shell ping" answers, $2=kaputt: settings.
             # $3: what busctl exits with (1: nobody holds the bus), $4: argument for omarchy-buddy-check,
             # $5: what tests/live exits with (then the check runs from a copy with a stand-in);
             # $gestoert: check.gestoert before the run, $extra_env: one more VAR=value,
-            # $kein_systemd: systemd-run fails
+            # $kein_systemd: systemd-run fails, $problem: the check before reported a problem (check.problem)
   rm -rf "$sb/home" "$sb/omarchy" "$sb/run" "$sb/aufrufe" "$sb/repo"
   stub=$sb/omarchy/bin
   mkdir -p "$sb/home/.config/omarchy" "$sb/home/.claude" "$stub" "$sb/run/quickshell/by-id/x"
@@ -67,6 +67,7 @@ sandbox() {  # $1: what "omarchy-shell shell ping" answers, $2=kaputt: settings.
   mkdir -p "$sb/home/.local/state/omarchy-buddy" "$sb/home/.config/omarchy-buddy"
   echo '{"updateCheck": true}' >"$sb/home/.config/omarchy-buddy/config.json"
   [[ -n ${gestoert-} ]] && echo "$gestoert" >"$sb/home/.local/state/omarchy-buddy/check.gestoert"
+  [[ -n ${problem-} ]] && : >"$sb/home/.local/state/omarchy-buddy/check.problem"
   env "${env[@]}" ${extra_env:+"$extra_env"} timeout 60 "$check" ${4:+"$4"}
   echo $? >"$sb/exit"
 }
@@ -139,6 +140,7 @@ check "dreimal gestört: Merkdatei weg" test ! -e "$state/check.gestoert"
 gestoert= sandbox ok "" 0 --nach-update 1
 check "echter Fehler: Meldung sofort" grep -q '^error Update-Check: etwas hakt Pop-ups\.' <(news)
 check "echter Fehler: keine Merkdatei" test ! -e "$state/check.gestoert"
+check "echter Fehler: merkt sich das Problem (#373)" test -e "$state/check.problem"
 gestoert=1 sandbox ok "" 0 --rueckfall 0
 check "--rueckfall mit Merkdatei: startet die Prüfung als eigene systemd-Einheit (#284)" \
   test "$(calls)" = "systemd-run --user --quiet --collect --setenv=OMARCHY_BUDDY_CHECK_DETACHED=1 $sb/repo/bin/omarchy-buddy-check --rueckfall"
@@ -149,7 +151,11 @@ check "--rueckfall mit Merkdatei, ohne User-systemd: setsid" \
 extra_env=OMARCHY_BUDDY_CHECK_DETACHED=1 gestoert=1 sandbox ok "" 0 --rueckfall 0
 check "Wiederholung ok: Live-Test gelaufen" grep -qx 'live --warten' <(calls)
 check "Wiederholung ok: Merkdatei weg" test ! -e "$state/check.gestoert"
-check "Wiederholung ok: gute Meldung" grep -q '^good Update-Check: Insel läuft 3 ok' <(news)
+check "Wiederholung ok, kein Problem davor: keine Meldung, steht im Log (#373)" \
+  test -z "$(news)" -a -n "$(grep '^All good' "$state/check.log")"
+problem=1 gestoert= sandbox ok "" 0 "" 0
+check "gut nach einem Problem: einmal „läuft wieder“, Merkdatei weg (#373)" \
+  test "$(news)" = "good Update-Check: Insel läuft wieder 3 ok, 1 Fehler, 0 übersprungen" -a ! -e "$state/check.problem"
 extra_env=OMARCHY_BUDDY_CHECK_DETACHED=1 gestoert=1 sandbox ok "" 0 --rueckfall 3
 check "Wiederholung gestört: keine Meldung, Merkdatei zählt 2" test -z "$(news)" -a "$(cat "$state/check.gestoert" 2>/dev/null)" = 2
 gestoert= sandbox ok "" 0 --rueckfall 3

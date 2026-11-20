@@ -44,11 +44,14 @@
 #   tests/looks DIR buendel  only the app bundles (#369): 12 from Orca, 4 mails and a
 #                        single one, folded and unfolded, in "Für dich" and under
 #                        "Nachrichten", in the theme and a light one
+#   tests/looks DIR spaet    only a late news item (#373): an older day with an unread
+#                        item that arrived today is unfolded by itself, the other
+#                        older day stays folded, in the theme and a light one
 #   LOOKS_LANG=en tests/looks DIR …   the texts in English (default German)
 #   LOOKS_ZOOM=1.05 tests/looks DIR …  a fixed zoom (default automatic; for a headless FALLBACK monitor)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start || $2 == ki || $2 == icons || $2 == fuerdich || $2 == buendel ) ) ]] || { sed -n '2,48p' "$0"; exit 1; }
+[[ $# -eq 1 || ( $# -eq 2 && ( $2 == wetter || $2 == start || $2 == ki || $2 == icons || $2 == fuerdich || $2 == buendel || $2 == spaet ) ) ]] || { sed -n '2,51p' "$0"; exit 1; }
 mode=${2-}
 out=$(realpath -m "$1")
 mkdir -p "$out"
@@ -511,6 +514,25 @@ all_looks() {
   ipc omarchy-buddy.looks radius 10 >/dev/null
   variant "dunkel-rund"
 }
-case $mode in wetter) weather_looks ;; start) start_looks ;; ki) ki_looks ;; icons) icons_looks ;; fuerdich) fuerdich_looks ;; buendel) buendel_looks ;; *) all_looks ;; esac
+# A late item (#373): two older days already read (open and close), then one
+# that happened two days ago arrives now.
+spaet_looks() {
+  edge=top
+  local theme now
+  now=$(date +%s)
+  ipc omarchy-buddy.looks bar true >/dev/null
+  jq -nc --argjson n "$now" --arg a "$(L "Orca 1.4.2 erschienen" "Orca 1.4.2 released")" --arg b "$(L "Tests grün" "Tests green")" \
+      --arg c "$(L "Speicher fast voll" "Disk almost full")" '[
+    {time: ($n - 4 * 86400), source: "system", level: "warn", title: $c, body: "/home: 4 GB"},
+    {time: ($n - 2 * 86400 - 7200), source: "coding", level: "info", title: $a, body: ""},
+    {time: ($n - 2 * 86400), source: "coding", level: "good", title: $b, body: "omarchy-buddy: 42"},
+    {time: ($n - 60), source: "coding", level: "good", title: $b, body: "omarchy-buddy: 43"}]' >"$news.tmp" && mv "$news.tmp" "$news"
+  sleep 1; ipc omarchy-buddy open >/dev/null; sleep 1; ipc omarchy-buddy close >/dev/null; sleep 1
+  bin/omarchy-buddy-say --source github --quiet --time "$((now - 2 * 86400 - 3600))" --key looks-spaet \
+    "$(L "Review angefragt in beispiel/werkzeug#12" "Review requested in beispiel/werkzeug#12")" "$(L "Schnellere Suche" "Faster search")" >/dev/null
+  sleep 1; ipc omarchy-buddy open >/dev/null
+  for theme in dunkel hell; do colors "$theme"; shot "spaet-$theme-alter-tag-auf"; done
+}
+case $mode in spaet) spaet_looks ;; wetter) weather_looks ;; start) start_looks ;; ki) ki_looks ;; icons) icons_looks ;; fuerdich) fuerdich_looks ;; buendel) buendel_looks ;; *) all_looks ;; esac
 grep -iE 'error|warn' "$box/log" | grep -v 'portal' >&2 || true
 echo "Fotos in $out"

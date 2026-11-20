@@ -131,14 +131,15 @@ def popup_only(item):
     return bool(item.get("popup_only")) or (str(item.get("key", "")).startswith("done-") and item.get("level") == "good")
 
 
-def place_news(mode, add=None):
+def place_news(mode, add=None, drop_key=""):
     """Under the lock: the news from both places (disk and memory) into the
     one the mode wants, the other emptied; "noText" drops the private text
-    (prompt, command) of older items. add: one more item. Times are unique,
-    so an item in both places counts once. Pop-up-only items go after a minute."""
+    (prompt, command) of older items. add: one more item; drop_key: without
+    the items with this key (say --replace). Times are unique, so an item in
+    both places counts once. Pop-up-only items go after a minute."""
     old = time.time() - POPUP_ONLY_SECONDS
     items = {i.get("time", 0): i for i in read_news(NEWS) + read_news(NEWS_RAM)
-             if not (popup_only(i) and float(i.get("time") or 0) < old)}
+             if not (popup_only(i) and float(i.get("time") or 0) < old) and not (drop_key and i.get("key") == drop_key)}
     if add:
         items[add["time"]] = add
     items = sorted(items.values(), key=lambda i: i.get("time", 0))
@@ -158,18 +159,41 @@ def place_news(mode, add=None):
             os.remove(NEWS_RAM)
 
 
+EVENT_TIME_MIN = 946684800  # 2000-01-01: anything earlier is a typo, not an event
+
+
+def event_time(text, now):
+    """say --time: when something happened, as unix time. Takes epoch seconds
+    or ISO 8601 ("2026-11-17T14:05", "…Z", "…+01:00", a date alone; without a
+    zone: local time). The future is cut to now; nonsense raises ValueError."""
+    text = str(text).strip()
+    try:
+        when = float(text)
+    except ValueError:
+        from datetime import datetime
+        when = datetime.fromisoformat(text).timestamp()
+    if not EVENT_TIME_MIN <= when < float("inf"):  # NaN fails both
+        raise ValueError(f"no time: {text}")
+    return min(when, now)
+
+
 def say(title, body="", source="buddy", level="info", url="", key="", window="", orca=False,
         orca_terminal="", orca_pane="", watched=False, quiet=False, private=False, action="",
-        popup_only=False):
+        popup_only=False, happened=None, replace=False):
     """A news item into news.json (see bin/omarchy-buddy-say). False if one
-    with the same key is listed already. private: the body holds the user's
+    with the same key is listed already, unless replace: then the new item
+    takes the old one's place. private: the body holds the user's
     text (prompt, command), which "Verlauf: ohne Text" drops. action: what a
-    click does inside the island ("updates": bin/omarchy-buddy-update)."""
+    click does inside the island ("updates": bin/omarchy-buddy-update).
+    happened: when it happened (unix time), if that was before now. It is a
+    second field: "time" stays the arrival, which is the item's id and what
+    unread, the pop-up and "Für dich" go by (#373), so an item that arrives
+    late is still new; the island shows and sorts by "happened"."""
     mode = history_mode()
     with news_lock() as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         items = read_news(NEWS) + read_news(NEWS_RAM)
-        if key and any(i.get("key") == key for i in items):
+        if key and not replace and any(i.get("key") == key for i in items):
             return False
         now = time.time()
         # Keep times unique so the island can tell items apart by time.
@@ -181,8 +205,32 @@ def say(title, body="", source="buddy", level="info", url="", key="", window="",
                     "orca_pane": orca_pane, "watched": bool(watched), "quiet": bool(quiet), "private": bool(private),
                     "action": action, "popup_only": bool(popup_only)}
         item.update({k: v for k, v in optional.items() if v})
-        place_news(mode, item)
+        if happened and happened < now - 60:  # within the last minute is "now"
+            item["happened"] = happened
+        place_news(mode, item, key if replace else "")
     return True
+
+
+def newest_per_slot(items, slot):
+    """items without the older ones of each slot: slot(item) names what only
+    the newest (by arrival) stays of, "" for an item that always stays."""
+    newest = {}
+    for i in items:
+        s = slot(i)
+        if s and (s not in newest or i.get("time", 0) >= newest[s].get("time", 0)):
+            newest[s] = i
+    return [i for i in items if not slot(i) or newest[slot(i)] is i]
+
+
+def filter_news(keep):
+    """Takes items out of the news: keep(items) → the ones that stay."""
+    with news_lock() as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for path in (NEWS, NEWS_RAM):
+            items = read_news(path)
+            kept = keep(items)
+            if len(kept) != len(items):
+                save_json(path, kept, ensure_ascii=False)
 
 
 def unsay(key):

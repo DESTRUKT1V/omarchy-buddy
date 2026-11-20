@@ -21,6 +21,10 @@
 #           omarchy-buddy-check --rueckfall brings Omarchy's notifications back
 #   Morning a greeting with the day's summary on the first run after 7:00
 #
+# Of a program's version items and of the morning greeting only the newest
+# stays (news_slot, #373); GitHub items carry when it happened, not when the
+# feed saw it.
+#
 # What was already reported is remembered in ~/.local/state/omarchy-buddy/feed.json;
 # the very first run only records the current state. Network checks run at
 # most hourly unless --now is given. --test-kuma URL only says whether URL is
@@ -47,6 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath
 import buddy  # noqa: E402
 import gitwatch  # noqa: E402
 import orca  # noqa: E402
+import texts  # noqa: E402
 import updates  # noqa: E402
 from buddy import say, private_dir, private_open  # noqa: E402
 from texts import t, first_name  # noqa: E402
@@ -329,6 +334,49 @@ def check_crashes(st, quiet):
         action=f"crash:{dumps[-1].get('pid')}", quiet=all(omarchy_toasted(d, since, agent) for d in dumps))
 
 
+CLAUDE_URL = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+OMARCHY_REPO = "basecamp/omarchy"
+MORNING_KEY = "morning"
+VERSION_KEY = "version-"  # + "claude" or the GitHub repo
+# The greetings in every language, the name as anything: items from before #373 have no key.
+MORNING_TITLES = re.compile("|".join(re.escape(table[k]).replace(re.escape("{name}"), ".*")
+                                     for table in texts.TEXTS.values() for k in ("feed.morning", "feed.morning.later") if k in table))
+
+
+def news_slot(item):
+    """What only the newest item stays of (buddy.newest_per_slot): a
+    program's version ("Orca N erschienen") and the morning greeting; "" for
+    everything else. Items written before #373 carry no key: the feed's own
+    version items are told by their link, the greeting by its title."""
+    key = str(item.get("key") or "")
+    if key.startswith(VERSION_KEY) or key == MORNING_KEY:
+        return key
+    if key:
+        return ""
+    url = str(item.get("url") or "")
+    if item.get("source") == "coding":
+        if url == CLAUDE_URL:
+            return VERSION_KEY + "claude"
+        for repo in (OMARCHY_REPO, orca.REPO):  # only the repos the feed watches, not a say with a release link
+            if url.startswith(f"https://github.com/{repo}/releases/"):
+                return VERSION_KEY + repo
+    if item.get("source") == "buddy" and item.get("level") == "good" and not url \
+            and MORNING_TITLES.fullmatch(str(item.get("title") or "")):
+        return MORNING_KEY
+    return ""
+
+
+# Until #373 every good update check was a news item (check.good.title, de and en).
+OLD_CHECK_GOOD = ("Update-Check: Insel läuft", "Update check: island runs")
+
+
+def tidy_news(items):
+    """The news without what #373 no longer keeps: the older items of each
+    slot (news_slot) and the old "Update-Check: Insel läuft" items."""
+    return [i for i in buddy.newest_per_slot(items, news_slot)
+            if not (i.get("source") == "system" and i.get("level") == "good" and i.get("title") in OLD_CHECK_GOOD)]
+
+
 def check_claude_code(st, quiet):
     # 1.2 MB in 11/2026 and growing: only the newest entry at the top counts.
     text = fetch("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md", head=True)
@@ -344,8 +392,8 @@ def check_claude_code(st, quiet):
         body = t("feed.claude.body", items="; ".join(re.sub(r"^Added (an? |the )?", "", b) for b in added))
         if installed != latest:
             body += "  " + t("feed.installed", version=installed)
-        say(t("feed.claude", version=latest), body, source="coding", level="info",
-            url="https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")
+        say(t("feed.claude", version=latest), body, source="coding", level="info", url=CLAUDE_URL,
+            key=VERSION_KEY + "claude", replace=True)
     st["claude_latest"] = latest
 
 
@@ -358,7 +406,8 @@ def check_release(st, quiet, repo, name, installed=None):
         body = shorten(first.strip("-* "), 140) if first else ""
         if installed:
             body = (body + "  " if body else "") + t("feed.installed", version=installed)
-        say(t("feed.release", name=name, version=tag), body, source="coding", url=data.get("html_url", ""))
+        say(t("feed.release", name=name, version=tag), body, source="coding", url=data.get("html_url", ""),
+            key=VERSION_KEY + repo, replace=True)
     if tag:
         st[key] = tag
 
@@ -568,10 +617,22 @@ def github_items(notes):
     return items
 
 
+def github_happened(items, now):
+    """When the newest of these notifications was updated (unix time), None if none says."""
+    times = []
+    for i in items:
+        try:
+            times.append(buddy.event_time(i["stamp"], now))
+        except (ValueError, OverflowError):
+            pass
+    return max(times, default=None)
+
+
 def check_github(st, quiet):
     """Only with gh installed and signed in (otherwise gh fails and nothing
-    shows). Each thread once per update; several new ones in one item. The
-    first run with gh signed in only learns."""
+    shows). Each thread once per update; several new ones in one item, with
+    the time GitHub gives (updated_at), not the feed's. The first run with gh
+    signed in only learns."""
     if not shutil.which("gh"):
         return
     code, out = run(["gh", "api", "notifications"], timeout=30)
@@ -590,13 +651,15 @@ def check_github(st, quiet):
     if quiet or learning or not new:
         return
     level = "warn" if any(i["kind"] == "ci" for i in new) else "info"
+    happened = github_happened(new, time.time())
     if len(new) == 1:
         i = new[0]
-        say(t("feed.github." + i["kind"], ref=i["ref"]), shorten(i["title"], 120), source="github", level=level, url=i["url"])
+        say(t("feed.github." + i["kind"], ref=i["ref"]), shorten(i["title"], 120), source="github", level=level, url=i["url"],
+            happened=happened)
     else:
         say(t("feed.github.many", n=len(new)),
             ", ".join(t("feed.github.short." + i["kind"]) + " " + i["ref"] for i in new[:6]) + (" …" if len(new) > 6 else ""),
-            source="github", level=level, url="https://github.com/notifications")
+            source="github", level=level, url="https://github.com/notifications", happened=happened)
 
 
 def morning(st):
@@ -607,7 +670,8 @@ def morning(st):
     st["morning"] = today
     found = pending(st) if update_news() else []
     say(t("feed.morning" if now.hour < 12 else "feed.morning.later", name=first_name()),
-        update_title(found) if found else t("feed.morning.current"), source="buddy", level="good")
+        update_title(found) if found else t("feed.morning.current"), source="buddy", level="good",
+        key=MORNING_KEY, replace=True)
 
 
 # ------------------------------------------------------------------- main
@@ -657,7 +721,7 @@ def main():
             if update_news():
                 checks.append(check_git)
             checks += [check_claude_code,
-                       lambda s, q: check_release(s, q, "basecamp/omarchy", "Omarchy", s.get("omarchy_version", "").split("-")[0] or None),
+                       lambda s, q: check_release(s, q, OMARCHY_REPO, "Omarchy", s.get("omarchy_version", "").split("-")[0] or None),
                        check_orca]
         for check in checks:
             try:
@@ -670,6 +734,7 @@ def main():
             morning(st)
         else:
             st["morning"] = datetime.now().strftime("%Y-%m-%d") if datetime.now().hour >= 7 else ""
+        buddy.filter_news(tidy_news)  # also what older versions of the feed left behind
         buddy.save_json(STATE, st, ensure_ascii=False, indent=1)
 
 

@@ -492,6 +492,30 @@ test("Neuigkeiten nach Tagen: heute höchstens 5, ältere Tage zugeklappt (#183)
   assert.equal(L.dayLabel(at(25, 12).time, new Date(2026, 9, 26, 1).getTime() / 1000), "Gestern")
   assert.equal(L.dayLabel(new Date(2025, 11, 31, 22).getTime() / 1000, new Date(2026, 0, 1, 8).getTime() / 1000), "Gestern")
 
+  // #373: eine verspätete Meldung (heute angekommen, am 29. passiert) steht unter ihrem Tag
+  // und nach ihrer Uhrzeit einsortiert, bleibt aber ungelesen und in „Für dich“ (das geht nach der Ankunft).
+  const late = { time: today(16).time, happened: at(29, 13).time, title: "spät", level: "error" }
+  const withLate = L.newsDays(items.concat([late]), now, { "2026-10-29": true })
+  assert.deepEqual(withLate.map(d => [d.label, d.count]), [["Heute", 7], ["Gestern", 2], ["Do., 29.10.", 2], ["Di., 27.10.", 1]])
+  assert.deepEqual(withLate[2].items.map(i => i.title || "ohne"), ["spät", "ohne"])
+  assert.equal(L.newsTime(late), at(29, 13).time)
+  assert.equal(L.newsTime(today(9)), today(9).time, "ohne das Feld (alte news.json): die Ankunft")
+  assert.equal(L.newsUnread(late, today(15).time, {}), true)
+  assert.deepEqual(L.unread([late], [], today(15).time, {}), [late])
+  assert.deepEqual(L.forYou([], [], [late], today(15).time, {}, L.forYouSince(now)).news, [late])
+  assert.equal(L.readUpTo(0, [late, today(15)], []), late.time, "gelesen bis zur Ankunft")
+  // Ein älterer Tag mit einer ungelesenen Neuigkeit ist von selbst aufgeklappt, die anderen nicht.
+  const all = items.concat([late]), opened = (unfolded, lastRead, readIds) => L.newsDays(all, now, unfolded, "de", lastRead, readIds).map(d => d.open)
+  assert.deepEqual(opened({}, today(15).time, {}), [true, false, true, false])
+  assert.equal(L.newsDays(all, now, {}, "de", today(15).time, {})[2].name, "Do., 29.10., 2 Neuigkeiten, aufgeklappt")
+  assert.deepEqual(L.newsDays(all, now, {}, "de", today(15).time, {})[2].items.map(i => i.title || "ohne"), ["spät", "ohne"])
+  // Von Hand zugeklappt bleibt zu (solange die Insel offen ist); gelesen (alles, oder als Pop-up gesehen): wieder zu.
+  assert.deepEqual(opened({ "2026-10-29": false }, today(15).time, {}), [true, false, false, false])
+  assert.deepEqual(opened({}, late.time, {}), [true, false, false, false])
+  assert.deepEqual(opened({}, today(15).time, { [L.newsId(late)]: late.time }), [true, false, false, false])
+  assert.deepEqual(opened({ "2026-10-31": true }, late.time, {}), [true, true, false, false], "von Hand aufgeklappt wie bisher")
+  assert.equal(L.newsDays(items, now, { "2026-11-01": false })[0].items.length, 5, "heute: false wie nicht aufgeklappt")
+
   const en = L.newsDays(items, now, {}, "en")
   assert.deepEqual(en.map(d => d.label), ["Today", "Yesterday", "Thu, Oct 29", "Tue, Oct 27"])
   assert.equal(en[0].more, "2 more today")

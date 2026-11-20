@@ -16,7 +16,9 @@
 # 2. After an update the bar's indicator list follows Omarchy's (setup --indicators).
 # 3. Otherwise the contract tests (tests/contract.test.js) and the live test
 #    (tests/live --warten, only with "updateCheck": true in
-#    ~/.config/omarchy-buddy/config.json after an update), the result as a news item from O-Morchy.
+#    ~/.config/omarchy-buddy/config.json after an update). Only a problem is a news item from
+#    O-Morchy, and once "läuft wieder" after one (check.problem in the state folder remembers it,
+#    #373); a good result is in the log alone.
 #    Did the live test after an update fail only while something real was on
 #    the island (tests/live exit 3: a real request, a real pop-up, the view
 #    opened by you, away or fullscreen; the test stops there and acts only on
@@ -155,10 +157,15 @@ if ((live == 3)); then
 fi
 rm -f "$retry_file"
 
+problem_file=$state_dir/check.problem
 if ((${#problems[@]})); then
+  : >"$problem_file"
   "$say" --source system --level error "$(t check.bad.title)" \
     "$(t check.bad.body problems="$(IFS=';'; echo "${problems[*]}" | sed 's/;/; /g')" log="$log")"
+elif [[ -e $problem_file ]]; then
+  rm -f "$problem_file"
+  "$say" --source system --level good "$(t check.recovered.title)" "${summary:-$(t check.contractOk)}"
 else
-  "$say" --source system --level good "$(t check.good.title)" "${summary:-$(t check.contractOk)}"
+  echo "All good $(date '+%T'): no news item (${summary:-contract tests ok})"
 fi
 exit 0

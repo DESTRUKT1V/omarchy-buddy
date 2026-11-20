@@ -21,9 +21,10 @@ Column {
     return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime() / 1000
   }
 
-  function unfold(key) {
+  // open: what the row shows now (a day with an unread item is open by itself).
+  function unfold(key, open) {
     var next = Object.assign({}, app.news.unfolded)
-    if (next[key]) delete next[key]; else next[key] = true
+    next[key] = !open
     app.news.unfolded = next
     app.touch()
   }
@@ -106,7 +107,7 @@ Column {
       // By day (#183); "Für dich" stays one list.
       Repeater {
         model: view.forYou ? [{ key: "", label: "", count: 0, open: true, name: "", today: true, items: view.items, more: "", moreName: "" }]
-          : IslandLogic.newsDays(view.items, view.today, view.app.news.unfolded, Theme.lang)
+          : IslandLogic.newsDays(view.items, view.today, view.app.news.unfolded, Theme.lang, view.app.prefs.lastRead, view.app.prefs.readIds)
 
         Column {
           id: day
@@ -120,7 +121,7 @@ Column {
             open: day.modelData.open
             name: day.modelData.name
             key: "day|" + day.modelData.key
-            onActivated: view.unfold(day.modelData.key)
+            onActivated: view.unfold(day.modelData.key, day.modelData.open)
           }
           Repeater {
             model: day.modelData.items
@@ -219,7 +220,7 @@ Column {
                       anchors.right: doneNews.visible ? doneNews.left : parent.right
                       anchors.rightMargin: doneNews.visible ? Theme.s(12) : 0
                       anchors.verticalCenter: parent.verticalCenter
-                      text: view.app.when(Number(item.modelData.time || 0))
+                      text: view.app.when(IslandLogic.newsTime(item.modelData))
                       font.pixelSize: Theme.fCaption
                       font.features: { "tnum": 1 }
                       color: Theme.muted
@@ -278,7 +279,7 @@ Column {
             open: !!view.app.news.unfolded[day.modelData.key]
             name: day.modelData.moreName
             key: "day|" + day.modelData.key + "|more"
-            onActivated: view.unfold(day.modelData.key)
+            onActivated: view.unfold(day.modelData.key, open)
           }
         }
       }

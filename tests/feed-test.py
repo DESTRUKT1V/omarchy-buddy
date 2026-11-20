@@ -211,7 +211,8 @@ fresh(claude=(0, "2.4.9 (Claude Code)\n"))
 st = {"claude_latest": "2.4.9"}
 feed.check_claude_code(st, quiet=False)
 check("Claude Code: neue Version mit den neuen Funktionen", said and said[0]["title"] == "Claude Code 2.5.0 ist da"
-      and said[0]["body"] == "Neu: /fast command; option to do things  (installiert: 2.4.9)", said)
+      and said[0]["body"] == "Neu: /fast command; option to do things  (installiert: 2.4.9)"
+      and (said[0]["key"], said[0]["replace"]) == ("version-claude", True), said)
 said.clear()
 feed.check_claude_code(st, quiet=False)
 check("Claude Code: dieselbe Version: still", said == [] and st["claude_latest"] == "2.5.0")
@@ -226,7 +227,70 @@ check("Release: installiert ist schon so neu: still", said == [] and st["release
 st = {}
 feed.check_release(st, False, "basecamp/omarchy", "Omarchy", "3.1.9")
 check("Release: neuer: erste Zeile der Notizen", said and said[0]["title"] == "Omarchy 3.2.0 erschienen"
-      and said[0]["body"] == "Better *things  (installiert: 3.1.9)" and said[0]["url"] == "https://x/rel", said)
+      and said[0]["body"] == "Better *things  (installiert: 3.1.9)" and said[0]["url"] == "https://x/rel"
+      and (said[0]["key"], said[0]["replace"]) == ("version-basecamp/omarchy", True), said)
+
+# 5b. #373: of a version and of the morning greeting only the newest stays,
+#     also of the items older feeds wrote without a key; the rest is left alone.
+REL = "https://github.com/stablyai/orca/releases/tag/v"
+old_news = [
+    {"time": 1, "source": "coding", "title": "Orca 1.0 erschienen", "url": REL + "1.0"},
+    {"time": 2, "source": "coding", "title": "Claude Code 2.4 ist da", "url": feed.CLAUDE_URL},
+    {"time": 3, "source": "buddy", "level": "good", "title": "Guten Morgen, Lea"},
+    {"time": 4, "source": "coding", "title": "Orca 1.1 erschienen", "url": REL + "1.1"},
+    {"time": 5, "source": "buddy", "level": "good", "title": "Hi Lea – your day so far"},
+    {"time": 6, "source": "coding", "title": "HANCORE hat 1.3.3 freigegeben", "url": "https://github.com/x/hancore/releases/tag/1.3.3"},
+    {"time": 7, "source": "coding", "title": "HANCORE hat 1.3.4 freigegeben", "url": "https://github.com/x/hancore/releases/tag/1.3.4"},
+    {"time": 8, "source": "buddy", "level": "good", "title": "Guten Morgen zusammen", "key": "eigener"},
+    {"time": 9, "source": "buddy", "title": "Hallo Welt"},
+    {"time": 10, "source": "coding", "title": "Orca 1.2 erschienen", "url": REL + "1.2", "key": "version-stablyai/orca"},
+    {"time": 11, "source": "buddy", "level": "good", "title": "Hallo Lea – dein Tagesstand", "key": "morning"},
+    {"time": 12, "source": "system", "level": "good", "title": "System-Check: alles da"},
+    {"time": 13, "source": "system", "level": "good", "title": "System-Check: alles da"},
+    {"time": 14, "source": "system", "level": "good", "title": "Update-Check: Insel läuft", "body": "41 ok"},
+    {"time": 15, "source": "system", "level": "good", "title": "Update check: island runs"},
+    {"time": 16, "source": "system", "level": "good", "title": "Update-Check: Insel läuft wieder"},
+    {"time": 17, "source": "system", "level": "error", "title": "Update-Check: etwas hakt"},
+]
+check("Aufräumen: Arten (Version je Programm, Morgengruß), Fremdes nie",
+      [feed.news_slot(i) for i in old_news] == ["version-stablyai/orca", "version-claude", "morning", "version-stablyai/orca",
+                                                "morning", "", "", "", "", "version-stablyai/orca", "morning", "", "", "", "", "", ""],
+      [feed.news_slot(i) for i in old_news])
+check("Aufräumen: je Art bleibt nur der neueste, alles andere bleibt",
+      [i["time"] for i in feed.buddy.newest_per_slot(old_news, feed.news_slot)] == [2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+check("Aufräumen: alte „Update-Check: Insel läuft“ (de/en) weg, „läuft wieder“ und Probleme bleiben",
+      [i["time"] for i in feed.tidy_news(old_news)] == [2, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17])
+
+# 5c. #373: say --replace and the event time, in the real news.json (sandbox HOME).
+B = feed.buddy
+news = lambda: [(i.get("key", ""), i["title"], i.get("happened")) for i in B.read_news(B.NEWS)]
+B.say("alt", key="k")
+check("say: gleicher Schlüssel ohne replace: übersprungen", B.say("neu", key="k") is False and news() == [("k", "alt", None)], news())
+B.say("fremd")
+check("say: replace ersetzt den alten Eintrag, der neue steht als jüngster", B.say("neu", key="k", replace=True) is True
+      and news() == [("", "fremd", None), ("k", "neu", None)]
+      and B.read_news(B.NEWS)[1]["time"] > B.read_news(B.NEWS)[0]["time"], news())
+B.say("spät", happened=1000000000.0)
+B.say("Zukunft", happened=B.time.time() + 3600)
+late = B.read_news(B.NEWS)[-2]
+check("say: Ereigniszeit als zweites Feld, die Ankunft bleibt jetzt; Zukunft: kein Feld",
+      late["happened"] == 1000000000.0 and late["time"] > B.time.time() - 60 and news()[-1] == ("", "Zukunft", None), news())
+B.save_json(B.NEWS, old_news)
+B.filter_news(feed.tidy_news)
+check("Aufräumen in news.json", [i["time"] for i in B.read_news(B.NEWS)] == [2, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17])
+B.save_json(B.NEWS, [])
+NOW = 1795000000.0
+def no_time(text):
+    try:
+        B.event_time(text, NOW)
+    except (ValueError, OverflowError):
+        return True
+check("Ereigniszeit: Epoch und ISO (Z, Zone, ohne Zone lokal)", B.event_time("1794000000", NOW) == 1794000000
+      and B.event_time("2026-10-31T10:00:00Z", NOW) == datetime(2026, 10, 31, 10, tzinfo=timezone.utc).timestamp()
+      and B.event_time("2026-10-31T11:00:00+01:00", NOW) == B.event_time("2026-10-31T10:00:00Z", NOW)
+      and B.event_time("2026-10-31 10:00", NOW) == datetime(2026, 10, 31, 10).timestamp())
+check("Ereigniszeit: Zukunft wird jetzt, Unsinn abgewiesen", B.event_time(str(NOW + 5), NOW) == NOW
+      and B.event_time("2999-01-01", NOW) == NOW and all(no_time(x) for x in ("gestern", "", "0", "-5", "nan", "inf", "1999-12-31", "12")))
 
 # 7b. Uptime Kuma: the two public endpoints behind a status page URL; a down
 #     monitor once (several bundled), back only after 10 quiet minutes, no
@@ -337,6 +401,8 @@ feed.check_github(st, False)
 check("GitHub: eine neue: Titel, Text, Seite", [(s["title"], s["body"], s["level"], s["source"], s["url"]) for s in said]
       == [("Du wurdest in beispiel/werkzeug#7 erwähnt", "Absturz beim Start", "info", "github",
            "https://github.com/beispiel/werkzeug/issues/7")], said)
+check("GitHub: Ereigniszeit ist updated_at (#373)",
+      said[0]["happened"] == datetime(2026, 10, 31, 10, tzinfo=timezone.utc).timestamp(), said)
 gh(review, mention)
 feed.check_github(st, False)
 check("GitHub: schon gesehen: still", said == [], said)
@@ -345,6 +411,9 @@ feed.check_github(st, False)
 check("GitHub: mehrere gebündelt, fehlgeschlagene Action warnt", [(s["title"], s["body"], s["level"], s["url"]) for s in said]
       == [("3 Neuigkeiten auf GitHub", "Review beispiel/werkzeug#12, Action fehlgeschlagen beispiel/werkzeug, Antwort beispiel/werkzeug#3",
            "warn", "https://github.com/notifications")], said)
+check("GitHub: gebündelt zählt die jüngste Zeit; kaputte Zeit: keine",
+      said[0]["happened"] == datetime(2026, 10, 31, 11, tzinfo=timezone.utc).timestamp()
+      and feed.github_happened([{"stamp": ""}, {"stamp": "kaputt"}], 2e9) is None, said)
 fresh(gh=(4, ""))
 feed.check_github(st, False)
 fresh(gh=(0, "kein json"))
@@ -372,7 +441,8 @@ try:
     feed.morning(st)
     feed.morning(st)
     check("Morgengruß: einmal am Tag mit Tagesstand", [(s["title"], s["body"]) for s in said]
-          == [("Guten Morgen, Lea", "Updates: Omarchy, 3 Pakete")], said)
+          == [("Guten Morgen, Lea", "Updates: Omarchy, 3 Pakete")]
+          and (said[0]["key"], said[0]["replace"]) == ("morning", True), said)
     Clock.hour_now = 6
     fresh()
     feed.morning({})

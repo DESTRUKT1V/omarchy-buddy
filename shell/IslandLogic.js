@@ -235,19 +235,28 @@ function dayLabel(t, now, lang) {
 
 // The news list by local day (#183), newest day first: today unfolded with
 // at most newsTodayMax items (the rest behind "N weitere heute"), older days
-// folded to a row with their count. `unfolded` (day key → true) is what the
-// user opened: an older day, or all of today.
+// folded to a row with their count. An older day with an unread item
+// (newsUnread: by arrival) is unfolded by itself (#373: a late item under
+// its day is seen at once). `unfolded` (day key → true or false) is what the
+// user opened or closed since the view opened: an older day, or all of today;
+// it wins over the unread rule.
 // → [{ key, label, today, count, open, items (shown), more (today's row to
 //   fold or unfold, "" for none) and moreName, name (for a screen reader:
 //   day, count, folded or not) }]
 var newsTodayMax = 5
 
-function newsDays(items, now, unfolded, lang) {
+// When a news item happened: omarchy-buddy-say --time and GitHub give it
+// ("happened", #373), otherwise it is the arrival ("time"). The list shows,
+// sorts and groups by it; unread, pop-ups and "Für dich" go by the arrival,
+// so an item that arrives late stands under its day and is still new.
+function newsTime(item) { return Number(item.happened || item.time || 0) }
+
+function newsDays(items, now, unfolded, lang, lastRead, readIds) {
   var days = [], byKey = {}, today = dayKey(now)
   unfolded = unfolded || {}
-  var sorted = items.slice().sort(function(a, b) { return Number(b.time || 0) - Number(a.time || 0) })
+  var sorted = items.slice().sort(function(a, b) { return newsTime(b) - newsTime(a) })
   for (var i = 0; i < sorted.length; i++) {
-    var t = Number(sorted[i].time || 0), k = dayKey(t)
+    var t = newsTime(sorted[i]), k = dayKey(t)
     if (!byKey[k]) {
       byKey[k] = { key: k, label: dayLabel(t, now, lang), today: k === today, all: [] }
       days.push(byKey[k])
@@ -255,7 +264,9 @@ function newsDays(items, now, unfolded, lang) {
     byKey[k].all.push(sorted[i])
   }
   return days.map(function(d) {
-    var count = d.all.length, open = d.today || !!unfolded[d.key]
+    var count = d.all.length, byUser = unfolded[d.key]
+    var open = d.today || (byUser === undefined
+      ? d.all.some(function(i) { return newsUnread(i, lastRead === undefined ? Infinity : lastRead, readIds) }) : !!byUser)
     var cut = d.today && !unfolded[d.key] ? newsTodayMax : count
     var name = d.label + ", " + (count === 1 ? Strings.tl(lang, "news.one") : Strings.tl(lang, "news.many", count))
       + ", " + Strings.tl(lang, open ? "a11y.unfolded" : "a11y.folded")

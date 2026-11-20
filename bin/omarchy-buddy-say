@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Hand a news item to the omarchy-buddy island (Omarchy shell plugin).
 #
-#   omarchy-buddy-say [--source S] [--level L] [--url U] [--key K] TITLE [BODY]
+#   omarchy-buddy-say [--source S] [--level L] [--url U] [--key K [--replace]] [--time T] TITLE [BODY]
 #   omarchy-buddy-say [options] --stdin <'{"title": …, "body": …}'
 #
 #   --source  claude | codex | gemini | crush | grok | cursor-agent | copilot | opencode | pi-agent | omp | agy | qwen | kimi | devin | commandcode | kiro-cli | muse | system | terminal | coding | kuma | github | buddy   (default: buddy;
@@ -9,6 +9,12 @@
 #   --level   info | good | warn | error                      (default: info)
 #   --url     opened when the item is clicked
 #   --key     skip the item if one with the same key is already listed
+#   --replace with --key: take the listed item's place instead of skipping
+#             (only the newest of its kind stays, like a version or a daily summary)
+#   --time    when it happened, if not just now: epoch seconds or ISO 8601
+#             ("2026-11-17T14:05", without a zone local time). The island shows
+#             and sorts the item by it; it still pops up and counts as unread.
+#             The future becomes now, anything else is refused.
 #   --window  Hyprland window address to focus when the item is clicked
 #   --orca    the item belongs to a Claude session in an Orca terminal
 #   --orca-terminal, --orca-pane   that terminal's handle and pane key (to jump there)
@@ -30,9 +36,10 @@ import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
-from buddy import say  # noqa: E402
+from buddy import event_time, say  # noqa: E402
 
 
 def action(text):
@@ -42,6 +49,13 @@ def action(text):
     return text
 
 
+def happened(text):
+    try:
+        return event_time(text, time.time())
+    except (ValueError, OverflowError):
+        raise argparse.ArgumentTypeError(f"no time (epoch seconds or ISO 8601): {text}")
+
+
 def main():
     p = argparse.ArgumentParser(description="Hand a news item to the O-Morchy island.")
     p.add_argument("--source", default="buddy", choices=["claude", "codex", "gemini", "crush", "grok", "cursor-agent", "copilot", "opencode", "pi-agent", "omp", "agy", "qwen", "kimi", "devin", "commandcode", "kiro-cli", "muse", "system", "terminal", "coding", "kuma", "github", "buddy", "mochi"],
@@ -49,6 +63,8 @@ def main():
     p.add_argument("--level", default="info", choices=["info", "good", "warn", "error"])
     p.add_argument("--url", default="")
     p.add_argument("--key", default="")
+    p.add_argument("--replace", action="store_true")
+    p.add_argument("--time", type=happened, default=None, metavar="WHEN")
     p.add_argument("--window", default="", help=argparse.SUPPRESS)
     p.add_argument("--orca", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--orca-terminal", default="", help=argparse.SUPPRESS)
@@ -67,8 +83,10 @@ def main():
         a.title, a.body = str(data.get("title") or ""), str(data.get("body") or "")
     elif a.title is None:
         p.error("the following arguments are required: title")
+    if a.replace and not a.key:
+        p.error("--replace needs --key")
     say(a.title, a.body, a.source, a.level, a.url, a.key, a.window, a.orca,
-        a.orca_terminal, a.orca_pane, a.watched, a.quiet, a.private, a.action, a.popup_only)
+        a.orca_terminal, a.orca_pane, a.watched, a.quiet, a.private, a.action, a.popup_only, a.time, a.replace)
 
 
 if __name__ == "__main__":
